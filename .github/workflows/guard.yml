@@ -1,0 +1,54 @@
+# Rede de protecao: falha se algo derivado do jogo for rastreado, ou se um arquivo
+# passar de 2 MB. Nao substitui conferir git status antes do commit.
+# Safety net: fails when anything derived from the game is tracked, or when a file
+# exceeds 2 MB. It does not replace checking git status before committing.
+name: no-game-files
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject game, firmware and lifted files
+        run: |
+          set -eu
+          forbidden=$(git ls-files | grep -Ei \
+            -e '\.(iso|elf|self|sprx|prx|pkg|pup|rpf|sdat|edat|rap|sfo|pic|bin|exe|dll|obj|o|a|lib|pdb|ppm|wav|f32|dmp|err|out|mon|pilhas|vigia)$' \
+            -e '(^|/)(ppu_recomp[^/]*\.(c|cpp|h)|spu_recomp\.c|jobs_register\.c|dsp_register\.c|cache\.dat|act\.dat)$' \
+            -e '(^|/)(local|lifted|recompiled|generated_spu|spu_jobs|spu_dsp|vfs|dev_flash|boots|PS3_GAME|USRDIR|dlcPack)/' \
+            || true)
+          if [ -n "$forbidden" ]; then
+            echo "::error::Arquivos proibidos rastreados / forbidden files tracked:"
+            echo "$forbidden"
+            exit 1
+          fi
+      - name: Reject files over 2 MB
+        run: |
+          set -eu
+          big=$(git ls-files -z | xargs -0 -r du -k | awk '$1 > 2048' || true)
+          if [ -n "$big" ]; then
+            echo "::error::Arquivos acima de 2 MB / files over 2 MB:"
+            echo "$big"
+            exit 1
+          fi
+      - name: Images only as small JPEGs in docs/screenshots
+        run: |
+          set -eu
+          bad=$(git ls-files | grep -Ei '\.(png|jpe?g|gif|bmp|tga|dds|webp)$' | grep -Ev '^docs/screenshots/[^/]+\.jpg$' || true)
+          big=$(git ls-files -z 'docs/screenshots/*.jpg' | xargs -0 -r du -k | awk '$1 > 300' || true)
+          if [ -n "$bad$big" ]; then
+            echo "::error::Imagens fora de docs/screenshots ou acima de 300 KB / images outside docs/screenshots or over 300 KB:"
+            echo "$bad"; echo "$big"
+            exit 1
+          fi
+      - name: Patches only touch toolkit paths
+        run: |
+          set -eu
+          bad=$(grep -h '^+++ b/' patches/*.patch | sed 's#^+++ b/##' | grep -Ev '^(libs|runtime|tools|include|cmake|templates)/' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Patch fora dos caminhos do ps3recomp / patch touches non-toolkit paths:"
+            echo "$bad"
+            exit 1
+          fi

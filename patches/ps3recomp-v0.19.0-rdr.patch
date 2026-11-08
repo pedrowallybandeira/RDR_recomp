@@ -1,0 +1,1704 @@
+diff --git a/libs/misc/cellAvconfExt.c b/libs/misc/cellAvconfExt.c
+index 2ab88b8..962b41f 100644
+--- a/libs/misc/cellAvconfExt.c
++++ b/libs/misc/cellAvconfExt.c
+@@ -46,6 +46,11 @@ s32 cellAudioOutGetSoundAvailability(u32 audioOut, u32 type, u32 fs, u32 option)
+      * then fall through to DTS/AC3 probes that also returned 0 -- YDKJ ends up with no
+      * FMOD threads at all. Returning the real 7.1 for LPCM matches the console. */
+     if (type == CELL_AUDIO_OUT_CODING_TYPE_LPCM) {
++        /* PS3_AUDIO_OUT_CH=<n>: the LPCM maximum to report (RPCS3 with a stereo
++         * device reports 2, and RDR2 then mixes down to 2 channels). */
++        static int s_ch = -1;
++        if (s_ch < 0) { const char* e = getenv("PS3_AUDIO_OUT_CH"); s_ch = e ? atoi(e) : 0; }
++        if (s_ch == 2 || s_ch == 6 || s_ch == 8) return s_ch;
+         if (fs & CELL_AUDIO_OUT_FS_48KHZ) return CELL_AUDIO_OUT_CHNUM_6;  /* 5.1 (A/B: was 8) */
+         return CELL_AUDIO_OUT_CHNUM_2;
+     }
+diff --git a/libs/spurs/cellFiber.c b/libs/spurs/cellFiber.c
+index 3673985..ecd78e3 100644
+--- a/libs/spurs/cellFiber.c
++++ b/libs/spurs/cellFiber.c
+@@ -30,6 +30,7 @@
+ #include <windows.h>
+ #else
+ #include <pthread.h>
++#include <sched.h>
+ #include <ucontext.h>
+ 
+ #if defined(__APPLE__)
+@@ -118,6 +119,7 @@ static CONDITION_VARIABLE s_cv   = CONDITION_VARIABLE_INIT;
+ #  define UNLOCK()  ReleaseSRWLockExclusive(&s_lock)
+ #  define WAIT()    SleepConditionVariableSRW(&s_cv, &s_lock, INFINITE, 0)
+ #  define WAKE()    WakeAllConditionVariable(&s_cv)
++#  define YIELD()   SwitchToThread()
+ #else
+ static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_cond_t  s_cv   = PTHREAD_COND_INITIALIZER;
+@@ -125,6 +127,7 @@ static pthread_cond_t  s_cv   = PTHREAD_COND_INITIALIZER;
+ #  define UNLOCK()  pthread_mutex_unlock(&s_lock)
+ #  define WAIT()    pthread_cond_wait(&s_cv, &s_lock)
+ #  define WAKE()    pthread_cond_broadcast(&s_cv)
++#  define YIELD()   sched_yield()
+ #endif
+ 
+ /* Lookups; the lock is held. */
+@@ -182,6 +185,12 @@ static int host_create(Fiber* f)
+     return f->host_fiber != NULL;
+ }
+ 
++/* Still holds its host stack, which RunFibers releases once it is back from the fiber. */
++static int host_alive(const Fiber* f)
++{
++    return f->host_fiber != NULL;
++}
++
+ /* Releases the host stack. The fiber must not be the one running, nor be resumed again. */
+ static void host_destroy(Fiber* f)
+ {
+@@ -220,6 +229,12 @@ static int host_create(Fiber* f)
+     return 1;
+ }
+ 
++/* Still holds its host stack, which RunFibers releases once it is back from the fiber. */
++static int host_alive(const Fiber* f)
++{
++    return f->host_stack != NULL;
++}
++
+ /* Releases the host stack. The fiber must not be the one running, nor be resumed again. */
+ static void host_destroy(Fiber* f)
+ {
+@@ -391,11 +406,27 @@ s32 cellFiberPpuCreateFiber(CellFiberPpuScheduler* scheduler, CellFiberPpu* fibe
+     }
+ 
+     LOCK();
++    /* A title may build a new fiber on the CellFiberPpu of one that has ended (RDR2 does, once per load step), so an
++     * ended fiber gives way here. Only a live one is an error. */
++    Fiber* old = find_fiber(fiber_ea);
++    while (old && old->state == F_DONE && host_alive(old)) {
++        UNLOCK();
++        YIELD();
++        LOCK();
++        old = find_fiber(fiber_ea);
++    }
++    if (old && old->state == F_DONE) {
++        for (Fiber** pf = &s_fibers; *pf; pf = &(*pf)->next) {
++            if (*pf == old) { *pf = old->next; break; }
++        }
++        free(old);
++        old = NULL;
++    }
+     Sched* s = find_sched(sched_ea);
+     s32 rc = CELL_OK;
+     if (!s) {
+         rc = (s32)CELL_FIBER_ERROR_INVAL;
+-    } else if (find_fiber(fiber_ea)) {
++    } else if (old) {
+         rc = (s32)CELL_FIBER_ERROR_STAT;
+     } else {
+         f->sched = s;
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index b09220e..220e0a1 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -81,7 +81,7 @@ static u32           s_next_task_id = 0;
+  * Event flag sync side table
+  *
+  * The CellSpursEventFlag itself is 128 bytes of GAME-owned guest memory in
+- * the REAL big-endian kernel layout (see EF_* offsets below) — the SPU side
++ * the REAL big-endian kernel layout (see EF_* offsets below) â€” the SPU side
+  * (lifted task-library code) reads/writes it with DMA + atomics, so the PPU
+  * HLE must operate on the same guest bytes, never a host struct. This side
+  * table (keyed by guest EA) only adds the host mutex + condvar used to block
+@@ -259,7 +259,7 @@ extern void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId);
+  * bit 0x8000>>s in the used/pending/mode words), hand each its received
+  * events, auto-clear consumed bits, then signal the tasks. PPU waiters are
+  * poll-based here (ef_wait_timed ticks re-check EF_EVENTS), so no PPU
+- * wait-slot registration is needed — and deliberately NOT written, so the
++ * wait-slot registration is needed â€” and deliberately NOT written, so the
+  * SPU-side lifted Set code takes its "no PPU waiter" path and simply ORs
+  * bits that our poll then observes. */
+ /* The flag struct is ONE 128-byte line the SPU task library updates with
+@@ -409,7 +409,7 @@ void spurs_ef_set_from_spu(uint32_t flag_ea, uint16_t bits)
+  * The CellSpurs instance (0x2000 bytes of GAME-owned guest memory) is real
+  * shared state: the game's engine pokes it with INLINED atomics (readyCount
+  * stores, signal bits) and the policy modules DMA it from the SPU side. So
+- * it must hold the REAL big-endian kernel layout — never a host struct.
++ * it must hold the REAL big-endian kernel layout â€” never a host struct.
+  * Verified offsets (RPCS3 cellSpurs.h contract):
+  *   +0x00 wklReadyCount1[16] (u8/wid)   +0x80 wklState1[16] (u8: 2=runnable)
+  *   +0x10 wklIdleSpuCount[16]           +0x90 wklStatus1[16]
+@@ -422,7 +422,7 @@ void spurs_ef_set_from_spu(uint32_t flag_ea, uint16_t bits)
+  *   +0x77 wklFlagReceiver (u8, 0xFF = none)
+  * Our own bookkeeping lives in a host side-table keyed by instance EA.
+  * A host "kernel" thread per instance polls readyCount/signal and runs the
+- * workload's policy module (spurs_policy.c) — the virtual SPU.
++ * workload's policy module (spurs_policy.c) â€” the virtual SPU.
+  * =====================================================================*/
+ enum {
+     SPURS_WKL_READY1   = 0x00,
+@@ -616,7 +616,7 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix,
+     if (prefix) memcpy(si->prefix, prefix, 15);
+ 
+     /* Real BE instance: zero it, then the few live fields. (The global
+-     * workload table is NOT wiped here — the title may init several SPURS
++     * workload table is NOT wiped here â€” the title may init several SPURS
+      * instances before adding workloads to any of them.) */
+     memset(vm_base + spurs_ea, 0, inst_size);
+     *(vm_base + spurs_ea + SPURS_NSPUS) = (u8)si->nspus;
+@@ -1182,7 +1182,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+     uint32_t context_ea = (uint32_t)(uintptr_t)context;
+ 
+     /* taskId/taskset are guest EAs; translate before deref. elf/context stay
+-     * guest EAs (handled below — elf is translated for load, context kept EA). */
++     * guest EAs (handled below â€” elf is translated for load, context kept EA). */
+     taskset = GUEST_PTR(taskset, CellSpursTaskset*);
+     CellSpursTaskId* taskId_h = GUEST_PTR(taskId, CellSpursTaskId*);
+ 
+@@ -1313,7 +1313,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+              * NOTE: dispatch is synchronous (runs to completion inline). That
+              * suits create+join task patterns; a workload/taskset whose SPU job
+              * waits on concurrent PPU-side signals will want the async lv2
+-             * SPU-thread path instead — wired when a title exercises it. */
++             * SPU-thread path instead â€” wired when a title exercises it. */
+             if (elf) {
+                 /* elf/context are guest effective addresses; translate the image
+                  * pointer to host memory for fingerprint+load, but keep context
+@@ -1321,7 +1321,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+                 const uint8_t* host_elf = GUEST_PTR(elf, const uint8_t*);
+                 size_t sz = spu_elf_image_size(host_elf, 2u * 1024 * 1024);
+                 if (sz)
+-                    /* Async: SPURS tasks are persistent workers — running them
++                    /* Async: SPURS tasks are persistent workers â€” running them
+                      * inline would block this PPU thread forever (deadlock). */
+                     spu_workload_dispatch_async(host_elf, (uint32_t)sz,
+                                                 (uint32_t)(uintptr_t)context);
+@@ -1513,7 +1513,8 @@ s32 _cellSpursTasksetAttributeInitialize(CellSpursTasksetAttribute* attr,
+     attr->revision = revision ? revision : 1;
+     attr->args = argTaskset;
+     attr->tasksetSize = CSTS_STRUCT_END;
+-    printf("[cellSpurs] _TasksetAttributeInitialize(rev=%u)\n", revision);
++    attr->args = argTaskset;   /* RDR2: event flag EA its SPU tasks receive in r4 */
++    printf("[cellSpurs] _TasksetAttributeInitialize(rev=%u args=0x%llX)\n", revision, (unsigned long long)argTaskset);
+     return CELL_OK;
+ }
+ 
+@@ -1916,7 +1917,7 @@ s32 cellSpursWorkloadAttributeInitialize(CellSpursWorkloadAttribute* attr,
+  * The SPURS "kernel": a coordinator plus the configured virtual-SPU workers.
+  *
+  * The game kicks work by storing a nonzero wklReadyCount1[wid] byte or a
+- * wklSignal1 bit into the instance — mostly with INLINED atomics (LBP never
++ * wklSignal1 bit into the instance â€” mostly with INLINED atomics (LBP never
+  * calls an API for it beyond cellSpursReadyCountStore). The kernel thread
+  * polls those real BE fields, consumes one ready unit (decrement / clear the
+  * signal bit, like the real kernel's dispatch), and runs the workload's
+@@ -2366,13 +2367,13 @@ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
+     ef_lock(sync);
+ 
+     /* Block until the requested bit pattern is satisfied in the GUEST struct
+-     * (BE events word at +0x00) — set by an SPU task (lifted code / taskset
++     * (BE events word at +0x00) â€” set by an SPU task (lifted code / taskset
+      * syscall) or another PPU thread. Poll-based: ef_wait_timed ticks re-read
+      * guest memory, so task-side PUTLLC stores are observed without needing
+      * the real lv2-event-queue notification path.
+      *
+      * A wait the SPU never satisfies is a REAL deadlock and must present as
+-     * one — that is the signal naming the workload that is not executing.
++     * one â€” that is the signal naming the workload that is not executing.
+      * SPURS_EF_FORCE=1 restores the old fake for A/B comparison only. */
+     static int s_force = -1;
+     if (s_force < 0) s_force = getenv("SPURS_EF_FORCE") ? 1 : 0;
+@@ -2515,7 +2516,7 @@ s32 cellSpursEventFlagGetDirection(CellSpursEventFlag* eventFlag,
+  * Additional functions needed by Tokyo Jungle (from RPCS3 audit)
+  * -----------------------------------------------------------------------*/
+ 
+-/* _cellSpursEventFlagInitialize — internal init with more parameters */
++/* _cellSpursEventFlagInitialize â€” internal init with more parameters */
+ s32 _cellSpursEventFlagInitialize(void* spurs, void* taskset,
+                                     CellSpursEventFlag* eventFlag,
+                                     u32 clearMode, u32 direction)
+@@ -2529,7 +2530,7 @@ s32 _cellSpursEventFlagInitialize(void* spurs, void* taskset,
+     return cellSpursEventFlagInitialize((CellSpursTaskset*)taskset, eventFlag, clearMode, direction);
+ }
+ 
+-/* _cellSpursSendSignal — internal signal delivery */
++/* _cellSpursSendSignal â€” internal signal delivery */
+ s32 _cellSpursSendSignal(void* taskset, u32 taskId)
+ {
+     uint32_t taskset_ea = (uint32_t)(uintptr_t)taskset;
+@@ -2571,10 +2572,17 @@ enum {
+ static struct {
+     u32 jc_ea;        /* CellSpursJobChain EA (0 = free) */
+     u32 entry_ea;     /* first command word EA */
++    u32 pc;           /* next command: CellSpursJobChain.pc, kept across Run/Kick */
++    u32 ret_pc;       /* CALL/RET link, kept with it */
+     u16 size_desc;
+     u16 max_grab;
++    u32 max_cont;     /* maxContention: SPUs that may work on the chain at once */
++    long inflight;    /* jobs handed to the pool and not finished (s_jcq_lock) */
++    volatile long done;      /* jobs finished, for the periodic statistics */
++    u32 last_job[4];         /* last descriptors handed out */
+     int run_count;
+     volatile long running;   /* 1 while a host thread walks this chain */
++    volatile long kicks;     /* Run/Kick requests, so none is lost to coalescing */
+ } s_jobchains[MAX_JOBCHAINS];
+ 
+ static void jc_dump_commands(const char* tag, u32 ea, int max_words)
+@@ -2630,6 +2638,12 @@ s32 cellSpursJobChainAttributeSetName(u64 attr_ea, u64 name_ea)
+     return CELL_OK;
+ }
+ 
++static void jc_set_max_cont(u32 jc_ea, u32 max_cont)
++{
++    for (int i = 0; i < MAX_JOBCHAINS; i++)
++        if (s_jobchains[i].jc_ea == jc_ea) { s_jobchains[i].max_cont = max_cont; return; }
++}
++
+ /* Register (or re-register) a job chain handle. Shared by both Create forms. */
+ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
+                        const char* who)
+@@ -2638,6 +2652,8 @@ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
+         if (!s_jobchains[i].jc_ea || s_jobchains[i].jc_ea == jc_ea) {
+             s_jobchains[i].jc_ea     = jc_ea;
+             s_jobchains[i].entry_ea  = entry_ea;
++            s_jobchains[i].pc        = entry_ea;
++            s_jobchains[i].ret_pc    = 0;
+             s_jobchains[i].size_desc = size_desc;
+             s_jobchains[i].max_grab  = max_grab;
+             s_jobchains[i].run_count = 0;
+@@ -2674,8 +2690,10 @@ s32 cellSpursCreateJobChainWithAttribute(u64 spurs_ea, u64 jc_ea, u64 attr_ea)
+            (u32)jc_ea, entry, sd_mg >> 16, sd_mg & 0xFFFFu,
+            name_ea ? (const char*)(vm_base + name_ea) : "-");
+ 
+-    return jc_register((u32)jc_ea, entry, (u16)(sd_mg >> 16), (u16)(sd_mg & 0xFFFFu),
+-                       "CreateJobChainWithAttribute");
++    s32 rc = jc_register((u32)jc_ea, entry, (u16)(sd_mg >> 16), (u16)(sd_mg & 0xFFFFu),
++                         "CreateJobChainWithAttribute");
++    jc_set_max_cont((u32)jc_ea, vm_read32((u32)attr_ea + JCATTR_MAX_CONT));
++    return rc;
+ }
+ 
+ /* cellSpursCreateJobChain -- the no-attribute form, and the one the WWS job
+@@ -2709,8 +2727,10 @@ s32 cellSpursCreateJobChain(u64 spurs_ea, u64 jc_ea, u64 entry_ea,
+         if (entry_ea && (u32)entry_ea < 0x10000000u)
+             jc_dump_commands("CreateJobChain", (u32)entry_ea, 16);
+     }
+-    return jc_register((u32)jc_ea, (u32)entry_ea, (u16)sizeJobDescriptor,
+-                       (u16)maxGrabbedJob, "CreateJobChain");
++    s32 rc = jc_register((u32)jc_ea, (u32)entry_ea, (u16)sizeJobDescriptor,
++                         (u16)maxGrabbedJob, "CreateJobChain");
++    jc_set_max_cont((u32)jc_ea, maxContention);
++    return rc;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -2738,6 +2758,36 @@ enum {                              /* CellSpursJobHeader (48 B) */
+     JH_SIZE          = 0x30,
+ };
+ 
++/* Each chain walks on its own host thread, so jobs overlap the way they do on
++ * SPUs and must not share a cellSpursGetCurrentSpuId. A job holds a number while
++ * it runs, from the five the title gave its SPURS instance. */
++#define JC_SPUS 5
++extern void spurs_job_set_spu_num(uint32_t n);
++static volatile long s_jc_spu_busy;
++
++static u32 jc_claim_spu(void)
++{
++    for (;;) {
++        const long busy = s_jc_spu_busy;
++        for (u32 n = 0; n < JC_SPUS; n++) {
++            if (busy & (1L << n)) continue;
++            if (_InterlockedCompareExchange(&s_jc_spu_busy, busy | (1L << n), busy) == busy)
++                return n;
++            break;
++        }
++        SwitchToThread();
++    }
++}
++
++static void jc_release_spu(u32 n)
++{
++    for (;;) {
++        const long busy = s_jc_spu_busy;
++        if (_InterlockedCompareExchange(&s_jc_spu_busy, busy & ~(1L << n), busy) == busy)
++            return;
++    }
++}
++
+ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+ {
+     u64 ea_bin_raw = vm_read64(job_ea + JH_EA_BINARY);
+@@ -2771,7 +2821,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+      * DMA traffic at all. spu_workload_dispatch_job reproduces jm2's staging.
+      * Synchronous by design: a job runs to completion, and the chain's own
+      * NEXT/CALL/RET commands are what order them. */
++    const u32 spu = jc_claim_spu();
++    spurs_job_set_spu_num(spu);
+     spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
++    jc_release_spu(spu);
+ }
+ 
+ /* Walk one chain's command stream. Bounded: a malformed or self-looping stream
+@@ -2798,8 +2851,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+  * -----------------------------------------------------------------------*/
+ 
+ #define MAX_JOBGUARDS 32
++static s32 jc_start(u64 jc_ea, const char* who);
+ static struct {
+     u32 ea;          /* guest CellSpursJobGuard address (128-byte aligned) */
++    u32 jc_ea;       /* the chain it guards: reaching zero runs it         */
+     u32 count;       /* notifications still outstanding                    */
+     u32 reset;       /* value to restore when autoReset is set             */
+     u32 pending;     /* notifications received, not yet consumed        */
+@@ -2823,7 +2878,7 @@ static int jg_find(u32 ea)
+ s32 cellSpursJobGuardInitialize(u64 jc_ea, u64 guard_ea, u32 notify_count,
+                                 u32 request_spu_count, u32 auto_reset)
+ {
+-    (void)jc_ea; (void)request_spu_count;
++    (void)request_spu_count;
+     u32 ea = (u32)guard_ea;
+     if (!ea) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+ 
+@@ -2833,6 +2888,7 @@ s32 cellSpursJobGuardInitialize(u64 jc_ea, u64 guard_ea, u32 notify_count,
+     if (i >= MAX_JOBGUARDS) return CELL_SPURS_TASK_ERROR_AGAIN;
+ 
+     s_jobguards[i].ea         = ea;
++    s_jobguards[i].jc_ea      = (u32)jc_ea;
+     s_jobguards[i].count      = notify_count;
+     s_jobguards[i].reset      = notify_count;
+     s_jobguards[i].pending    = 0;
+@@ -2863,11 +2919,15 @@ s32 cellSpursJobGuardNotify(u64 guard_ea)
+      * OBSERVED zero, which threw away any notify that arrived while the job
+      * was still running -- the title notified 6 times and the chain completed
+      * 2 laps, so the thread waiting on the other 4 completions never woke. */
+-    s_jobguards[i].pending++;
+-    { u32 remaining = (s_jobguards[i].pending >= s_jobguards[i].reset)
+-                    ? 0u : s_jobguards[i].reset - s_jobguards[i].pending;
++    const u32 pend = (u32)_InterlockedIncrement((volatile long*)&s_jobguards[i].pending);
++    { u32 remaining = (pend >= s_jobguards[i].reset)
++                    ? 0u : s_jobguards[i].reset - pend;
+       s_jobguards[i].count = remaining;
+-      vm_write32(ea, remaining); }
++      vm_write32(ea, remaining);
++      /* The library runs the chain on the notify that reaches zero. A walker
++       * that gave up on this guard, or that the chain's END stopped, would
++       * otherwise never see the release. */
++      if (!remaining) jc_start(s_jobguards[i].jc_ea, "JobGuardNotify"); }
+     { static int _n = 0;
+       if (PS3_LOG_FIRST(_n, 8))
+           printf("[cellSpurs] JobGuardNotify(0x%08X) -> %u remaining\n",
+@@ -2895,10 +2955,13 @@ static int jg_wait(u32 ea)
+     int i = jg_find(ea);
+     if (i < 0) return 1;
+     for (int spin = 0; spin < 20000; spin++) {     /* ~20 s at 1 ms */
+-        if (s_jobguards[i].pending >= s_jobguards[i].reset) {
++        const long pend = (long)s_jobguards[i].pending, need = (long)s_jobguards[i].reset;
++        if ((u32)pend >= (u32)need) {
+             /* Consume exactly one release worth of credits, so notifies that
+-             * arrived during the previous lap still count. */
+-            s_jobguards[i].pending -= s_jobguards[i].reset;
++             * arrived during the previous lap still count. A notify can land
++             * between the read and the write, so the subtraction is a CAS. */
++            if (_InterlockedCompareExchange((volatile long*)&s_jobguards[i].pending,
++                                           pend - need, pend) != pend) { spin--; continue; }
+             if (!s_jobguards[i].auto_reset) s_jobguards[i].reset = 0;
+             s_jobguards[i].count = s_jobguards[i].reset;
+             vm_write32(ea, s_jobguards[i].count);
+@@ -3000,10 +3063,112 @@ static void jc_signal_done(u32 jc_ea, int job_index)
+     }
+ }
+ 
+-static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
++/* Jobs of one chain in parallel (SPURS_JC_PARALLEL=1).
++ *
++ * On hardware every SPU the chain may use grabs the next JOB command, so jobs
++ * that no SYNC separates overlap, up to the chain's maxContention. The walk here
++ * hands those jobs to a pool of host threads and waits for them where the stream
++ * asks for it. Each job still claims its own SPU number (jc_claim_spu), and the
++ * thread that ran it pushes its completion, so the mailbox it posted stays paired
++ * with it. */
++#define JC_POOL JC_SPUS
++typedef struct { u32 jc_ea, job_ea, size_desc; int idx, slot; } jc_work;
++static SRWLOCK s_jcq_lock = SRWLOCK_INIT;
++static CONDITION_VARIABLE s_jcq_work = CONDITION_VARIABLE_INIT;
++static CONDITION_VARIABLE s_jcq_done = CONDITION_VARIABLE_INIT;
++static jc_work  s_jcq[256];     /* at most JC_SPUS per chain in flight */
++static unsigned s_jcq_head, s_jcq_tail;
++static volatile long s_jcq_started;
++
++static u32 jc_parallel(int slot)
++{
++    static int s_on = -1;
++    if (s_on < 0) s_on = getenv("SPURS_JC_PARALLEL") ? 1 : 0;
++    u32 n = s_jobchains[slot].max_cont;
++    if (!s_on || n <= 1) return 1;
++    return n > JC_SPUS ? JC_SPUS : n;
++}
++
++static DWORD WINAPI jc_worker(LPVOID p)
++{
++    ps3_thread_name("spurs jcw %d", (int)(intptr_t)p);
++    for (;;) {
++        AcquireSRWLockExclusive(&s_jcq_lock);
++        while (s_jcq_head == s_jcq_tail)
++            SleepConditionVariableSRW(&s_jcq_work, &s_jcq_lock, INFINITE, 0);
++        const jc_work w = s_jcq[s_jcq_head++ & 255u];
++        ReleaseSRWLockExclusive(&s_jcq_lock);
++
++        { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = w.jc_ea; }
++        jc_run_one_job(w.job_ea, w.idx, w.size_desc);
++        jc_signal_done(w.jc_ea, w.idx);
++
++        _InterlockedIncrement(&s_jobchains[w.slot].done);
++        AcquireSRWLockExclusive(&s_jcq_lock);
++        s_jobchains[w.slot].inflight--;
++        ReleaseSRWLockExclusive(&s_jcq_lock);
++        WakeAllConditionVariable(&s_jcq_done);
++    }
++}
++
++static void jc_submit(int slot, u32 job_ea, int idx, u32 size_desc, u32 par)
++{
++    if (!s_jcq_started && !_InterlockedExchange(&s_jcq_started, 1)) {
++        for (int i = 0; i < JC_POOL; i++) {
++            HANDLE th = CreateThread(NULL, 1u << 20, jc_worker, (LPVOID)(intptr_t)i, 0, NULL);
++            if (th) CloseHandle(th);
++        }
++        printf("[cellSpurs] SPURS_JC_PARALLEL: %d job threads\n", JC_POOL);
++    }
++    AcquireSRWLockExclusive(&s_jcq_lock);
++    while (s_jobchains[slot].inflight >= (long)par)
++        SleepConditionVariableSRW(&s_jcq_done, &s_jcq_lock, INFINITE, 0);
++    s_jobchains[slot].inflight++;
++    { static unsigned k; s_jobchains[slot].last_job[k++ & 3u] = job_ea; }
++    { static ULONGLONG s_t; const ULONGLONG now = GetTickCount64();
++      if (now - s_t >= 10000) {
++          static long s_prev[MAX_JOBCHAINS];
++          s_t = now;
++          for (int c = 0; c < MAX_JOBCHAINS; c++) {
++              if (!s_jobchains[c].jc_ea || s_jobchains[c].max_cont <= 1) continue;
++              const long d = s_jobchains[c].done;
++              fprintf(stderr, "[jc-stat] chain 0x%08X done=%ld (+%ld) inflight=%ld running=%ld kicks=%ld pc=0x%08X last=%08X %08X %08X %08X\n",
++                      s_jobchains[c].jc_ea, d, d - s_prev[c], s_jobchains[c].inflight,
++                      s_jobchains[c].running, s_jobchains[c].kicks, s_jobchains[c].pc,
++                      s_jobchains[c].last_job[0], s_jobchains[c].last_job[1],
++                      s_jobchains[c].last_job[2], s_jobchains[c].last_job[3]);
++              s_prev[c] = d;
++          }
++      } }
++    const jc_work w = { s_jobchains[slot].jc_ea, job_ea, size_desc, idx, slot };
++    s_jcq[s_jcq_tail++ & 255u] = w;
++    ReleaseSRWLockExclusive(&s_jcq_lock);
++    WakeConditionVariable(&s_jcq_work);
++}
++
++/* Wait until every job this chain handed out has finished. */
++static void jc_drain(int slot)
+ {
+-    u32 pc = entry_ea, ret_pc = 0;
++    AcquireSRWLockExclusive(&s_jcq_lock);
++    while (s_jobchains[slot].inflight)
++        SleepConditionVariableSRW(&s_jcq_done, &s_jcq_lock, INFINITE, 0);
++    ReleaseSRWLockExclusive(&s_jcq_lock);
++}
++
++/* The walk resumes where it stopped. CellSpursJobChain.pc is set at creation
++ * and Run/Kick never touch it: RDR's chains are lists that grow, with the game
++ * overwriting the tail END with a new job, writing a fresh END after it and
++ * calling Run. Restarting at the entry re-ran every old command against
++ * descriptors the game had already recycled, so a job could be picked from one
++ * read of the descriptor and staged from another: job 2CFF's code running on
++ * job 737F's local store. Stopping AT the END is what lets the overwritten
++ * slot be picked up next time. */
++static void jc_execute(int slot)
++{
++    const u32 jc_ea = s_jobchains[slot].jc_ea, size_desc = s_jobchains[slot].size_desc;
++    u32 pc = s_jobchains[slot].pc, ret_pc = s_jobchains[slot].ret_pc;
+     int jobs = 0;
++    const u32 par = jc_parallel(slot);
+     /* Bound IDLE steps, not total steps. A SPURS job chain is frequently a
+      * SERVICE LOOP -- guard, job, sync, next, repeat -- and is meant to run for
+      * the lifetime of the subsystem. A flat cap on total commands therefore
+@@ -3019,6 +3184,11 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+         u32 ext = (u32)(cmd & 127);
+ 
+         if (cmd != 0 && op == 0) {                    /* JOB */
++            if (par > 1) {
++                jc_submit(slot, (u32)(cmd & ~7ull), jobs++, size_desc, par);
++                idle = 0;
++                pc += 8; continue;
++            }
+             { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = jc_ea; }
+             int idx = jobs++;
+             jc_run_one_job((u32)(cmd & ~7ull), idx, size_desc);
+@@ -3036,31 +3206,40 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+         if (op == 4) { ret_pc = pc + 8; pc = (u32)(cmd & ~7ull); continue; }  /* CALL */
+         if (op == 7) {
+             if (ext == (7 | (15 << 3))) {                     /* END */
+-                printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs);
++                if (par > 1) jc_drain(slot);
++                { static int _n = 0;
++                  if (PS3_LOG_FIRST(_n, 16))
++                      printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs); }
++                s_jobchains[slot].pc = pc; s_jobchains[slot].ret_pc = ret_pc;
+                 if (jobs) jc_signal_done(jc_ea, jobs - 1);
+                 return;
+             }
+             if (ext == (7 | (14 << 3))) {                     /* RET */
+-                if (!ret_pc) return;
++                if (!ret_pc) goto stop;
+                 pc = ret_pc; ret_pc = 0; continue;
+             }
+             if (ext == (7 | (0 << 3))) {                      /* ABORT */
+                 printf("[cellSpurs] chain 0x%08X: ABORT\n", jc_ea);
+-                return;
++                goto stop;
+             }
+         }
+         if (op == 7 && ext == (7 | (1 << 3))) {           /* GUARD */
+             u32 g_ea = (u32)(cmd & ~127ull);
+-            if (!jg_wait(g_ea)) return;                  /* still closed */
++            if (par > 1) jc_drain(slot);
++            if (!jg_wait(g_ea)) goto stop;               /* still closed */
+             pc += 8; continue;
+         }
+         /* NOP(0) / SYNC+LWSYNC(2, one virtual SPU: nothing to wait for) /
+          * FLUSH(5) / JOBLIST(6, nested arrays TODO) / SET_LABEL */
++        if (par > 1 && (op == 2 || op == 5 || op == 6)) jc_drain(slot);
+         pc += 8;
+     }
+     printf("[cellSpurs] chain 0x%08X: 4096 commands with no job run after %d "
+            "job(s) -- malformed?\n",
+            jc_ea, jobs);
++stop:
++    if (par > 1) jc_drain(slot);
++    s_jobchains[slot].pc = pc; s_jobchains[slot].ret_pc = ret_pc;
+ }
+ 
+ static DWORD WINAPI jc_thread(LPVOID p)
+@@ -3074,9 +3253,17 @@ static DWORD WINAPI jc_thread(LPVOID p)
+      * Confirms timing-vs-never before committing to the async rewrite. */
+     { const char* d = getenv("SPURS_JC_DELAY");
+       if (d && *d) Sleep((unsigned)atoi(d)); }
+-    jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+-               s_jobchains[slot].size_desc);
+-    s_jobchains[slot].running = 0;
++    /* A Run that arrives while this walk is ending is coalesced, and a resumed
++     * walk only sees it if someone looks again: the game may be waiting on that
++     * job and call Run no more. Recheck after clearing `running`. */
++    for (;;) {
++        const long seen = s_jobchains[slot].kicks;
++        jc_execute(slot);
++        if (s_jobchains[slot].kicks != seen) continue;
++        _InterlockedExchange(&s_jobchains[slot].running, 0);
++        if (s_jobchains[slot].kicks == seen) break;
++        if (_InterlockedCompareExchange(&s_jobchains[slot].running, 1, 0) != 0) return 0;
++    }
+     /* Tell the application the chain is done. Without this the walk finishes
+      * in silence and a thread waiting on the attached queue never runs again. */
+     jc_signal_done(s_jobchains[slot].jc_ea, -1);
+@@ -3100,7 +3287,6 @@ static s32 jc_start(u64 jc_ea, const char* who)
+ {
+     static int s_off = -1;
+     if (s_off < 0) s_off = getenv("PS3_NO_JOBCHAIN") ? 1 : 0;
+-
+     for (int i = 0; i < MAX_JOBCHAINS; i++) {
+         if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
+         s_jobchains[i].run_count++;
+@@ -3110,6 +3296,7 @@ static s32 jc_start(u64 jc_ea, const char* who)
+             jc_dump_commands(who, s_jobchains[i].entry_ea, 16);
+         }
+         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
++        _InterlockedIncrement(&s_jobchains[i].kicks);
+         /* Coalesce: a chain already being walked must not start twice. */
+         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
+             HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
+@@ -3127,6 +3314,31 @@ s32 cellSpursRunJobChain(u64 jc_ea)
+     return jc_start(jc_ea, "RunJobChain");
+ }
+ 
++/* SPU side of the same two calls. grcore/edge_jobs.cpp runs inside RDR's
++ * "drawablespu" job and drives the EDGE/GFX chain from there, through the copies
++ * of cellSpursJobGuardNotify and cellSpursRunJobChain linked into that binary.
++ * Those read the guest CellSpursJobGuard and CellSpursJobChain, which this
++ * runtime keeps host-side, so they failed: RunJobChain with 0x80410A02 from the
++ * unset workload id, every later notify with 0x80410A0F from the spent count.
++ * Each failure hits an assert that halts the job before it stamps +0xF8 of its
++ * descriptor, and the render thread waits on that stamp forever. tools/lift_jobs.py
++ * replaces both routines with these. The EA arrives as a u64 in r3. */
++static void spu_set_r3(spu_context* ctx, s32 rc)
++{
++    ctx->gpr[3]._u32[0] = (u32)rc;
++    ctx->gpr[3]._u32[1] = ctx->gpr[3]._u32[2] = ctx->gpr[3]._u32[3] = 0;
++}
++
++void rdr2_spu_job_guard_notify(spu_context* ctx)
++{
++    spu_set_r3(ctx, cellSpursJobGuardNotify(ctx->gpr[3]._u32[1]));
++}
++
++void rdr2_spu_run_job_chain(spu_context* ctx)
++{
++    spu_set_r3(ctx, cellSpursRunJobChain(ctx->gpr[3]._u32[1]));
++}
++
+ /* cellSpursShutdownJobChain(CellSpursJobChain*) -- the other half of the pair.
+  *
+  * A title that starts a chain with Run/Kick ends it with Shutdown, then blocks
+@@ -3397,6 +3609,81 @@ s32 cellSpursQueuePushBody(u64 queue_ea, u64 data_ea, u32 isBlocking)
+     return CELL_OK;
+ }
+ 
++static inline uint32_t q_r32(uint32_t a)
++{
++    const uint8_t* p = vm_base + a;
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++static inline void q_w32(uint32_t a, uint32_t v)
++{
++    uint8_t* p = vm_base + a;
++    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
++}
++
++/* SDK ABI: cellSpursQueuePopBody(CellSpursQueue*, void* buffer, bool isPeek, bool isBlocking)
++ *
++ * RDR2 creates a batch of SPU tasks and then pops one result per task. Without a
++ * handler the import returned CELL_OK with nothing popped, so the PPU never waited
++ * for the batch and the ring filled at depth entries; every later task then parked
++ * or spun on push, one host thread each, adding 30 threads a second.
++ *
++ * The producer is the SPU task library (0x11510 in the task images): W1 holds ~index
++ * while a push is in flight, so normalised occupancy only counts finished entries.
++ * A full ring parks the task in a waiter list at +0x30, byte 0 the count and byte 1
++ * the head, capped at 14; the task unlinks itself when it retries, so a pop only
++ * signals the head. Late arrivals past the cap retry through GETLLAR, which is why
++ * W0 is written under the lock-line lock with reservers notified.
++ *
++ * The real PPU side sleeps on the attached lv2 queue. Here it polls: no SPU code
++ * sends that event, because cellSpursQueueAttachLv2EventQueue binds nothing. */
++s32 cellSpursQueuePopBody(u64 queue_ea, u64 data_ea, u32 isPeek, u32 isBlocking)
++{
++    if (!queue_ea || !data_ea) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
++    if (queue_ea & 0x7F)       return CELL_SPURS_TASK_ERROR_ALIGN;
++
++    extern void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId);
++    uint32_t q = (uint32_t)queue_ea;
++    int reported = 0;
++    for (unsigned spin = 0;; spin++) {
++        spu_lockline_lock();
++        int32_t  w0  = (int32_t)q_r32(q + 0x00);
++        int32_t  w1  = (int32_t)q_r32(q + 0x04);
++        int32_t  mod = (int32_t)q_r32(q + 0x0C);
++        uint32_t sz  = q_r32(q + 0x10);
++        uint32_t buf = q_r32(q + 0x1C);
++        uint32_t tsp = q_r32(q + 0x74);
++        if (mod <= 0 || !sz || !buf) {
++            spu_lockline_unlock();
++            return CELL_SPURS_TASK_ERROR_INVAL;
++        }
++        int32_t  pop  = (w0 < 0) ? ~w0 : w0;
++        int32_t  push = (w1 < 0) ? ~w1 : w1;
++        uint32_t n    = (uint32_t)((pop > push) ? push - pop + 2 * mod : push - pop);
++        int      head = vm_base[q + 0x30] ? vm_base[q + 0x31] : -1;
++        if (n) {
++            uint32_t slot = (uint32_t)(pop % mod);
++            memcpy(vm_base + (uint32_t)data_ea, vm_base + buf + (size_t)slot * sz, sz);
++            if (!isPeek) q_w32(q + 0x00, (uint32_t)((pop + 1) % (2 * mod)));
++            ef_line_end(q);
++            if (!isPeek && head >= 0 && tsp) spu_taskset_signal_task(tsp, (uint32_t)head);
++            return CELL_OK;
++        }
++        spu_lockline_unlock();
++        if (!isBlocking) return CELL_SPURS_TASK_ERROR_BUSY;
++
++        if (spin < 64) { SwitchToThread(); continue; }
++        /* A head signalled twice before it unlinked leaves the next waiter asleep
++         * with room in the ring, so repeat it while the consumer is starving. */
++        if (head >= 0 && tsp) spu_taskset_signal_task(tsp, (uint32_t)head);
++        Sleep(1);
++        if (!reported && spin > 5000) {
++            reported = 1;
++            printf("[cellSpurs] QueuePopBody(q=0x%08X) waiting for over 5 s: pop=%d push=%d waiters=%d\n",
++                   q, pop, push, vm_base[q + 0x30]);
++        }
++    }
++}
++
+ /* =========================================================================
+  * Misc SPURS surface the title links (logged CELL_OK stubs).
+  * =====================================================================*/
+@@ -3643,6 +3930,33 @@ s32 cellSpursBarrierInitialize(u64 taskset_ea, u64 barrier_ea, u32 total)
+     return CELL_OK;
+ }
+ 
++/* _cellSpursSemaphoreInitialize(CellSpurs* spurs, CellSpursTaskset* taskset,
++ *                               CellSpursSemaphore* semaphore, int total)
++ *
++ * Absent from the toolkit, so the import used to fall through as an unresolved
++ * NID and leave the line zeroed: every P then found nothing to take and its
++ * task slept for good, with the title waiting on those tasks' results.
++ *
++ * The tasks reach this 128-byte line from the SPU, through the semaphore code
++ * linked into their own images (in the RDR2 task image, P at 0x14088 and V at
++ * 0x142C8), which reads it with GETLLAR: the value as an s32 at +0x00, a ring of
++ * waiting task ids at +0x10 and one of their workload ids at +0x20 (byte 0 the
++ * count, up to 15 entries after it), and the taskset V signals as a u64 at
++ * +0x38. With that zero, V works the taskset out from the workload id.
++ */
++s32 _cellSpursSemaphoreInitialize(u64 spurs_ea, u64 taskset_ea, u64 sem_ea, s32 total)
++{
++    printf("[cellSpurs] _SemaphoreInitialize(spurs=0x%08X taskset=0x%08X sem=0x%08X total=%d)\n",
++           (u32)spurs_ea, (u32)taskset_ea, (u32)sem_ea, total);
++    if (!sem_ea)       return CELL_SPURS_TASK_ERROR_NULL_POINTER;
++    if (sem_ea & 127u) return CELL_SPURS_TASK_ERROR_ALIGN;
++
++    for (uint32_t o = 0; o < 128u; o += 8u) vm_write64((uint32_t)sem_ea + o, 0);
++    vm_write32((uint32_t)sem_ea + 0x00, (uint32_t)total);
++    vm_write64((uint32_t)sem_ea + 0x38, (u64)(uint32_t)taskset_ea);
++    return CELL_OK;
++}
++
+ /* cellSpursGetTasksetInfo(const CellSpursTaskset* taskset, CellSpursTasksetInfo* info)
+  *
+  * CellSpursTasksetInfo is 128 per-task entries of 0x48 bytes, then the
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index f073f32..594e40a 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -375,11 +375,15 @@ static CellGcmReportData s_report_data[CELL_GCM_MAX_REPORT_COUNT];
+ 
+ /* NV4097_SET_CONTEXT_DMA_REPORT (0x1A8): where NV4097_GET_REPORT writes.
+  * Local (0xFEED0000, the default): the s_report_data slots above, read back
+- * through cellGcmGetReport* / cellGcmGetReportDataAddress. Main memory
+- * (0xFEED0001, or CELL_GCM_CONTEXT_DMA_REPORT_LOCATION_MAIN 0xBAD68000): the
+- * report's 24-bit offset is an IO offset, and the 16-byte report goes to
+- * guest memory at gcm_io2ea(offset), where the title reads it itself.
+- * Killzone 3 sets 0xFEED0001 and keeps its reports in its own frame data. */
++ * through cellGcmGetReport* / cellGcmGetReportDataAddress. Main memory: the
++ * 16-byte report goes to guest memory, where the title reads it itself.
++ * 0xFEED0001: the report's 24-bit offset is a plain IO offset. Killzone 3 sets
++ * this and keeps its reports in its own frame data.
++ * CELL_GCM_CONTEXT_DMA_REPORT_LOCATION_MAIN (0xBAD68000): the offset is relative
++ * to IO 0x0E000000, the window the title maps for reports. Read as a plain IO
++ * offset it lands in the command ring: Red Dead Redemption maps 0x10100000
++ * there, and its occlusion reports overwrote the commands the walker was about
++ * to read. */
+ static u32 s_report_dma = 0xFEED0000u;
+ static u64 s_report_last_ts;
+ 
+@@ -2255,7 +2259,7 @@ static void gcm_3d_method(rsx_state* st, u32 m, u32 v, int legacy_state_live)
+         { static int rn = 0; if (PS3_LOG_FIRST(rn, 6)) printf("[GET_REPORT] type=%u off=0x%X dma=0x%08X%c", v >> 24, off, s_report_dma, 10); }
+         if (main_mem) {
+             /* CellGcmReportData, big-endian: u64 timer, u32 value, u32 padding. */
+-            const u32 rea = gcm_io2ea(off);
++            const u32 rea = gcm_io2ea(s_report_dma == 0xBAD68000u ? 0x0E000000u + off : off);
+             if (rea) {
+                 vm_write32(rea, (u32)(ts >> 32));
+                 vm_write32(rea + 4u, (u32)ts);
+@@ -2478,6 +2482,25 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             break;
+         }
+         u32 w = vm_read32(ea);
++        /* RDR2's SPU job closes each 8 KB ring segment with a JUMP to the next one
++         * and sends the block with one word before that JUMP left unwritten, so it
++         * holds whatever was in local store. Positive floats decode as a JUMP to
++         * unmapped IO, and the resync that follows drops the frame's label write,
++         * which deadlocks the render thread. The next word names the real exit,
++         * so step over this one. A workaround: who should fill it is not known. */
++        if (w && (s_fifo_getoff & 0x1F00u) == 0x1F00u) {
++            const u32 nea = gcm_io2ea(s_fifo_getoff + 4u);
++            const u32 nw = nea ? vm_read32(nea) : 0u;
++            if ((nw & 0xE0000003u) == 0x20000000u &&
++                (nw & 0x1FFFFFFCu) == ((s_fifo_getoff | 0x1FFFu) + 1u)) {
++                static unsigned long skipped = 0;
++                if (++skipped <= 8u || (skipped % 1024u) == 0u)
++                    fprintf(stderr, "[cellGcmSys] segment tail word 0x%08X at 0x%08X skipped (#%lu)\n",
++                            w, s_fifo_getoff, skipped);
++                s_fifo_getoff += 4u;
++                continue;
++            }
++        }
+         /* Only remember offsets BELOW put -- those are positions in the
+          * ring the title is writing. A park in another region is where the
+          * walker gave up, not how far it got through the ring. */
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 650f342..3d9f388 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -912,7 +912,7 @@ static int rsx_fp_decompile_internal(
+         }
+ 
+         if (gamma_masks && gamma_masks[tex_unit] && !(w0 & (1u << 21)) &&
+-            (opcode == OP_TXD || opcode == OP_TEXBEM || opcode == OP_TXPBEM)) {
++            (opcode == OP_TEXBEM || opcode == OP_TXPBEM)) {
+             static u32 reported;
+             if (PS3_LOG_FIRST(reported, 32))
+                 fprintf(stderr, "[RSX fp] gamma fetch opcode %u unsupported on unit %u\n", opcode, tex_unit);
+@@ -1024,6 +1024,23 @@ static int rsx_fp_decompile_internal(
+                 snprintf(rhs, sizeof(rhs),
+                          "rsx_tex[%u].Sample(rsx_samp[%u], (%s).xy)", tex_unit, tex_unit, a);
+             break;
++        /* Explicit-derivative fetch: SRC0 is the coordinate, SRC1 and SRC2 its
++         * partial derivatives along window x and y. A depth comparison on this
++         * opcode stops above, as for TXB and TXL. */
++        case OP_TXD:
++            if ((tex_sep_mask >> tex_unit) & 1u)
++                snprintf(rhs, sizeof(rhs),
++                         "rsx_tex%u.SampleGrad(rsx_samp[%u], (%s).xyz, (%s).xyz, (%s).xyz)",
++                         tex_unit, tex_unit, a, b, c);
++            else if (tex_sep_mask)
++                snprintf(rhs, sizeof(rhs),
++                         "rsx_tex%u.SampleGrad(rsx_samp[%u], (%s).xy, (%s).xy, (%s).xy)",
++                         tex_unit, tex_unit, a, b, c);
++            else
++                snprintf(rhs, sizeof(rhs),
++                         "rsx_tex[%u].SampleGrad(rsx_samp[%u], (%s).xy, (%s).xy, (%s).xy)",
++                         tex_unit, tex_unit, a, b, c);
++            break;
+         case OP_TXP:
+             if (shadow && shadow[tex_unit].enabled) {
+                 snprintf(rhs, sizeof(rhs), "_rsx_shadow%u((%s).xyz / (%s).w)", tex_unit, a, a);
+@@ -1093,7 +1110,8 @@ static int rsx_fp_decompile_internal(
+         }
+ 
+         if (gamma_masks && gamma_masks[tex_unit] && !(w0 & (1u << 21)) &&
+-            (opcode == OP_TEX || opcode == OP_TXP || opcode == OP_TXB || opcode == OP_TXL)) {
++            (opcode == OP_TEX || opcode == OP_TXP || opcode == OP_TXB || opcode == OP_TXL ||
++             opcode == OP_TXD)) {
+             char sample[sizeof rhs]; memcpy(sample, rhs, sizeof sample);
+             const int length = snprintf(rhs, sizeof rhs, "_rsx_gamma_input(%s, %uu)",
+                                         sample, gamma_masks[tex_unit] & 15u);
+@@ -1108,7 +1126,8 @@ static int rsx_fp_decompile_internal(
+          * A comparison fetch has nothing to expand. */
+         if (((w0 & (1u << 21)) || (expand_masks && expand_masks[tex_unit])) &&
+             !(shadow && shadow[tex_unit].enabled) &&
+-            (opcode == OP_TEX || opcode == OP_TXP || opcode == OP_TXB || opcode == OP_TXL)) {
++            (opcode == OP_TEX || opcode == OP_TXP || opcode == OP_TXB || opcode == OP_TXL ||
++             opcode == OP_TXD)) {
+             const int bx2 = (w0 & (1u << 21)) != 0;
+             u32 mask = bx2 ? 15u : (expand_masks[tex_unit] & 0x1Fu);
+             if (!bx2 && gamma_masks) mask &= ~(gamma_masks[tex_unit] & 15u);
+@@ -1119,7 +1138,7 @@ static int rsx_fp_decompile_internal(
+                 if (length < 0 || (size_t)length >= sizeof rhs) return -1;
+             }
+         } else if (((w0 & (1u << 21)) || (expand_masks && expand_masks[tex_unit])) &&
+-                   (opcode == OP_TXD || opcode == OP_TEXBEM || opcode == OP_TXPBEM)) {
++                   (opcode == OP_TEXBEM || opcode == OP_TXPBEM)) {
+             static u32 reported;
+             if (PS3_LOG_FIRST(reported, 32))
+                 fprintf(stderr, "[RSX fp] sign-expand fetch opcode %u unsupported on unit %u (read unexpanded)\n",
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index fe7c420..3814a0c 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -124,7 +124,7 @@ extern volatile unsigned long long g_yz_auto_start_tick;
+  * -----------------------------------------------------------------------*/
+ 
+ #define LD_SWAP_BUFFERS  2
+-#define MAX_SURFACES     64
++#define MAX_SURFACES     512
+ #define MAX_TEXTURES     1024
+ #define MAX_RETIRED_TEXTURES 4096
+ #define MAX_VTEX         64
+@@ -210,6 +210,7 @@ typedef struct {
+     /* Top-left windows of the surface for smaller aliasing textures (see surface_window). */
+     struct { ID3D12Resource* tex; ID3D12Resource* src; u32 w, h, wgen, used; } swin[LD_SWIN_PER];
+     u32 swin_wgen;            /* bumped by every write into the surface; a window older than it is recopied */
++    u64 last_write_serial;    /* production ordering across same-address views */
+ #if !defined(YZ_PERF_CLEAN)
+     u32 resource_serial;
+     u32 last_write_generation;
+@@ -302,6 +303,7 @@ typedef struct {
+ 
+     surface_t                  surfaces[MAX_SURFACES];
+     u32                        n_surfaces;
++    u64                        surface_write_serial;
+     display_buffer_t           display_buffers[8];
+ 
+     ID3D12DescriptorHeap*      dsv_heap;
+@@ -487,6 +489,7 @@ static void ld_surface_note_write(u32 target, u32 kind)
+     if (target >= MAX_SURFACES)
+         return;
+     surface_t* surface = &g.surfaces[target];
++    surface->last_write_serial = ++g.surface_write_serial;
+     const u32 generation = ++g_ld_surface_generation;
+     surface->swin_wgen++;
+     surface->last_write_generation = generation;
+@@ -517,7 +520,10 @@ static void ld_surface_note_write(u32 target, u32 kind)
+ }
+ #else
+ #define ld_surface_note_write(target, kind) \
+-    do { if ((target) < MAX_SURFACES) g.surfaces[(target)].swin_wgen++; } while (0)
++    do { if ((target) < MAX_SURFACES) { \
++        g.surfaces[(target)].last_write_serial = ++g.surface_write_serial; \
++        g.surfaces[(target)].swin_wgen++; \
++    } } while (0)
+ #endif
+ 
+ #define LD_LAYOUT_CACHE_CAP 256u
+@@ -2947,6 +2953,7 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+     s->resource_serial = ++g_ld_surface_resource_serial;
+ #endif
+     ld_surface_note_write(slot, LD_SURFACE_WRITE_CREATE);
++    s->last_write_serial = 0;  /* allocation is not a write of usable content */
+     /* RTVs for surfaces live above the swap-chain backbuffer RTVs */
+     g.dev->lpVtbl->CreateRenderTargetView(g.dev, s->tex,
+         NULL, rtv_handle(LD_SWAP_BUFFERS + slot));
+@@ -3084,6 +3091,54 @@ static int surface_window(u32 si, const rsx_dsp_texture* t, int dbg)
+     return (int)(SRV_SURF_WIN_BASE + si * LD_SWIN_PER + k);
+ }
+ 
++static u32 ld_surface_texel_bytes(DXGI_FORMAT format)
++{
++    if (format == DXGI_FORMAT_R32G32B32A32_FLOAT) return 16u;
++    if (format == DXGI_FORMAT_R16G16B16A16_FLOAT) return 8u;
++    return 4u;
++}
++
++/* Exact physical-layout reads of the current target need its ordered
++ * snapshot, even if a stale resource of another size shares its address.
++ * Keep existing remap/reinterpretation/subrectangle routes, and let a newer
++ * covering write through the same guest rows remain the sampled source. */
++static int surface_feedback_matches(const surface_t* s, const rsx_dsp_texture* t,
++                                    const rsx_dsp_surface* sf)
++{
++    const u32 base = t->format & TEX_FMT_BASE_MASK & ~(u32)TEX_FMT_UNNORM;
++    u32 color = 0;
++    if (s->fmt == DXGI_FORMAT_R8G8B8A8_UNORM && base == RSX_TEX_FMT_A8R8G8B8)
++        color = 8;
++    else if (s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT && base == RSX_TEX_FMT_W16Z16Y16X16_FLOAT)
++        color = 11;
++    else if (s->fmt == DXGI_FORMAT_R32G32B32A32_FLOAT && base == RSX_TEX_FMT_W32Z32Y32X32_FLOAT)
++        color = 12;
++    if (!color || (t->remap & 0xffffu) != 0xaae4u ||
++        sf->color_format != color || sf->raster_type != 1 ||
++        s->location != t->location || s->offset != t->offset ||
++        !(t->format & TEX_FMT_LINEAR) || t->dimension != 2 ||
++        t->cubemap || t->mipmaps > 1 || t->depth > 1 ||
++        t->width != s->w || t->height != s->h)
++        return 0;
++    const u64 row = (u64)s->w * ld_surface_texel_bytes(s->fmt);
++    const u64 sp = s->pitch ? s->pitch : row;
++    const u64 tp = t->pitch ? t->pitch : row;
++    if (!row || sp < row || tp != sp) return 0;
++    for (u32 i = 0; i < g.n_surfaces; i++) {
++        const surface_t* other = &g.surfaces[i];
++        if (other == s || !other->tex || other->location != s->location ||
++            other->offset != s->offset || other->fmt != s->fmt ||
++            other->w < t->width || other->h < t->height ||
++            other->last_write_serial <= s->last_write_serial)
++            continue;
++        const u64 other_row = (u64)other->w * ld_surface_texel_bytes(other->fmt);
++        const u64 other_pitch = other->pitch ? other->pitch : other_row;
++        if (other_pitch == sp && other_pitch >= other_row)
++            return 0;
++    }
++    return 1;
++}
++
+ /* A draw that samples its own render target. RSX reads and writes the same
+  * surface in one pass (GH3's post pass reads the scene at 0x200000 while
+  * drawing into 0x200000); D3D12 cannot, and the lookup used to fall back to
+@@ -5082,6 +5137,7 @@ typedef struct {
+     batch_t idx[256]; u32 n_idx;
+     u32     n_packets;
+     vtx_t*  verts; u32 n_verts, cap_verts;
++    u32     n_immediate;
+     rsx_vertex_ref* refs; u32 n_refs, cap_refs;
+     u32     n_source_refs;
+     int     refs_remapped;
+@@ -5103,6 +5159,7 @@ static draw_ctx dc;
+ static void dc_reset(void)
+ {
+     dc.n_arr = dc.n_idx = dc.n_verts = dc.n_refs = 0;
++    dc.n_immediate = 0;
+     dc.n_source_refs = 0;
+     dc.refs_remapped = 0;
+     dc.n_packets = 0;
+@@ -5471,6 +5528,8 @@ static const float* dc_vertex_attr(
+         return (const float*)(
+             dc.compact_verts + (u64)vertex * dc.layout.stride +
+             (u32)slot * 16u);
++    if (dc.n_immediate && vertex < dc.n_verts)
++        return dc.verts[vertex].a[attr];
+     memcpy(fallback, dc.fetch_plan.attr[attr].default_value, 16);
+     return fallback;
+ }
+@@ -5483,7 +5542,7 @@ static const float* dc_vertex_attr(
+ static const float* dc_vertex_attr_canonical(
+     u32 vertex, u32 attr, float fallback[4])
+ {
+-    if (!ld_vertex_compact_payload())
++    if (dc.n_immediate || !ld_vertex_compact_payload())
+         return dc.verts[vertex].a[attr];
+     const s8 slot = dc.layout.slot_by_attr[attr];
+     if (slot >= 0 && vertex < dc.n_verts)
+@@ -6305,6 +6364,26 @@ static void ld_movie_capture_overlay(void)
+ }
+ 
+ static void sink_begin(void* u, const rsx_dispatch* r, u32 prim) { (void)u; (void)r; (void)prim; dc_reset(); }
++/* Immediate positions latch the current attribute values at that point in the
++ * stream. Their payload is independent of array formats and guest addresses.
++ * Keep a bounded complete group; never draw a truncated allocation prefix. */
++static void sink_immediate_vertex(void* user,const rsx_dispatch* r)
++{
++    (void)user;g_ld_stats.packets_seen++;
++    if(g_ld_movie_mode && !ld_movie_composite_ui_enabled()) {g_ld_stats.packets_movie++;return;}
++    dc.n_packets++;
++    if(!dc.fetch_ok)return;
++    if(dc.n_immediate>=4096u) {dc.fetch_ok=0;return;}
++    vtx_t vertex;
++    for(u32 attr=0;attr<16;attr++) {
++        rsx_dsp_vertex_default(r,attr,vertex.a[attr]);
++        const u32 base=(0x1C00u+attr*16u)>>2;
++        if(r->seen[base] || r->seen[base+1] || r->seen[base+2] || r->seen[base+3])
++            memcpy(vertex.a[attr],r->regs+base,16);
++    }
++    push_vert(&vertex);
++    if(dc.fetch_ok) {dc.n_immediate++;g_ld_stats.packets_queued++;}
++}
+ static void sink_draw_arrays(void* u, const rsx_dispatch* r, u32 first, u32 count)
+ {
+     (void)u; (void)r; g_ld_stats.packets_seen++;
+@@ -6332,6 +6411,8 @@ static void sink_inline_array(void* u, const rsx_dispatch* r,
+         return;
+     }
+ 
++    if(dc.n_immediate) {dc.n_packets++;dc.fetch_ok=0;return;}
++
+     const u32 stride = rsx_vertex_inline_layout(&g.rsx, dc.inl_off);
+     if (!stride || bytes < stride) { g_ld_stats.packets_queue_full++; return; }
+ 
+@@ -7123,7 +7204,18 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g_ld_profile.total_used_attribute_max = used_layout.count;
+     const LONGLONG fetch_pack_begin = ld_profile_qpc();
+ #endif
+-    if (ld_vertex_compact_payload()) {
++    if (dc.n_immediate) {
++        if(dc.n_arr || dc.n_idx || dc.inl)dc.fetch_ok=0;
++        dc.layout=used_layout;
++        dc.n_source_refs=dc.n_immediate;
++        if(dc.fetch_ok && ld_vertex_compact_payload()) {
++            if(!reserve_compact_vertices((u64)dc.n_immediate*used_layout.stride))dc.fetch_ok=0;
++            if(dc.fetch_ok)for(u32 vertex=0;vertex<dc.n_immediate;vertex++)
++                for(u32 slot=0;slot<used_layout.count;slot++)
++                    memcpy(dc.compact_verts+(u64)vertex*used_layout.stride+slot*16u,
++                           dc.verts[vertex].a[used_layout.attrs[slot]],16u);
++        }
++    } else if (ld_vertex_compact_payload()) {
+         fetch_batches_hoisted(&used_layout, 1);
+     } else if (ld_vertex_hoist_fetch()) {
+         rsx_vertex_layout_plan legacy_layout;
+@@ -7470,7 +7562,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+                     zeta_pref = 1;
+                     break;
+                 }
+-        if (!zeta_pref) { u32 best_gen = 0;
++        const int current_feedback = !zeta_pref &&
++            surface_feedback_matches(&g.surfaces[target], &t, &sf);
++        if (!zeta_pref && !current_feedback) { u32 best_gen = 0;
+           for (u32 i = 0; i < g.n_surfaces; i++) {
+               const surface_t* sf_i = &g.surfaces[i];
+               if (sf_i->location != t.location || sf_i->offset != t.offset ||
+@@ -8506,6 +8600,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     sink.inline_array = sink_inline_array;
+     sink.draw_index_array = sink_draw_index;
+     sink.flip = sink_flip;
++    sink.immediate_vertex = sink_immediate_vertex;
+     rsx_dispatch_init(&g.rsx, &sink);
+ 
+     g.ready = 1;
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+index 37e3745..e46801f 100644
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -96,6 +96,7 @@ extern "C" const char* ppu_vfs_root = ".";
+ #define CELL_FS_EMFILE       (-2147418068)   /* 0x8001002C: fd table full */
+ #define CELL_FS_EINVAL       (-2147418110)   /* 0x80010002 */
+ #define CELL_FS_ENOSYS       (-2147418109)   /* 0x80010003 */
++#define CELL_FS_EBADF        (-2147418070)   /* 0x8001002A */
+ #define CELL_FS_S_IFDIR      0x4000u
+ #define CELL_FS_S_IFREG      0x8000u
+ #define CELL_FS_O_RDONLY     0
+@@ -914,9 +915,24 @@ static void cellFsFtruncate(ppu_context* ctx)
+                                      (int)(uint32_t)ctx->gpr[3], (unsigned long long)ctx->gpr[4], rc);
+     ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)CELL_FS_EIO;
+ }
+-/* File-area preallocation (LBP cache warm-up spams this): host filesystems
+- * grow files on write, so accepting is correct -- no preallocation needed. */
+-static void cellFsAllocateFileAreaWithoutZeroFill(ppu_context* ctx) { ctx->gpr[3] = CELL_OK; }
++/* cellFsAllocateFileAreaWithoutZeroFill(path, u64 size): give the file that size.
++ * Accepting it without doing anything left RDR2's cache.dat at whatever size its
++ * writes had reached, and the game, which checks the size on the next boot,
++ * rebuilt the cache from scratch every time. The new space is not written
++ * (fs_area.c). */
++extern "C" int host_extend_file(const char* path, uint64_t size);
++static void cellFsAllocateFileAreaWithoutZeroFill(ppu_context* ctx)
++{
++    char gpath[1024], hpath[1100];
++    guest_strcpy(gpath, (uint32_t)ctx->gpr[3], sizeof gpath);
++    host_path(hpath, sizeof hpath, gpath);
++    const int rc = host_extend_file(hpath, (uint64_t)ctx->gpr[4]);
++    { static int _n = 0;
++      if (PS3_LOG_FIRST(_n, 8))
++          fprintf(stderr, "[fs] AllocateFileArea '%s' -> '%s' size=0x%llX rc=%d\n", gpath, hpath,
++                  (unsigned long long)ctx->gpr[4], rc); }
++    ctx->gpr[3] = rc == 0 ? CELL_OK : (uint64_t)(int64_t)CELL_FS_EIO;
++}
+ 
+ /* Free space for (path, u32* block_size, u64* free_block_count). Unregistered,
+  * the call took the unresolved-NID path: CELL_OK with both out-params left as
+@@ -1031,6 +1047,69 @@ static void cellFsAioRead(ppu_context* ctx)
+                                  (uint64_t)(int64_t)id, (uint64_t)n, 0, 0, 0, 0);
+ }
+ 
++/* cellFsReadWithOffset(int fd, u64 offset, void* buf, u64 size, u64* nread)
++ *
++ * RDR2 reads its RPF archives through this call. Unregistered, it fell through
++ * to the unresolved-NID path: CELL_OK with nothing read, so the archive header
++ * stayed empty and the title gave up with "Cannot load archive". Absolute like
++ * cellFsAioRead, so it keeps the same lock and leaves the fd position alone. */
++static void cellFsReadWithOffset(ppu_context* ctx)
++{
++    int fd             = (int)(uint32_t)ctx->gpr[3];
++    uint64_t offset    = ctx->gpr[4];
++    uint32_t buf       = (uint32_t)ctx->gpr[5];
++    uint64_t size      = ctx->gpr[6];
++    uint32_t nread_ptr = (uint32_t)ctx->gpr[7];
++    FILE* f = fd_file(fd);
++    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
++    if (ppu_vm_size && (uint64_t)buf + size > ppu_vm_size) size = ppu_vm_size - buf;
++    fs_prefault(buf, size);
++    size_t n = 0;
++    HOST_LOCKFILE(f);
++    const int64_t pos = (int64_t)HOST_FTELL64(f);
++    if (HOST_FSEEK64(f, offset) == 0)
++        n = fread(vm_base + buf, 1, (size_t)size, f);
++    if (pos >= 0) HOST_FSEEK64(f, pos);
++    HOST_UNLOCKFILE(f);
++    { static int _n = 0;
++      if (PS3_LOG_FIRST(_n, 20) || getenv("FS_READ_ALL"))
++          fprintf(stderr, "[fs] read@ fd=%d off=0x%llX size=%llu -> %zu (magic=%02X%02X%02X%02X)\n",
++                  fd, (unsigned long long)offset, (unsigned long long)size, n,
++                  vm_base[buf], vm_base[buf+1], vm_base[buf+2], vm_base[buf+3]); }
++    if (nread_ptr) vm_write64(nread_ptr, n);
++    ctx->gpr[3] = CELL_OK;
++}
++
++/* cellFsWriteWithOffset(int fd, u64 offset, const void* buf, u64 size, u64* nwrite)
++ *
++ * RDR2's DiskCache writes cache.dat through this call. Unregistered, it reported
++ * success with nothing written and the file stayed at 0 bytes. */
++static void cellFsWriteWithOffset(ppu_context* ctx)
++{
++    int fd              = (int)(uint32_t)ctx->gpr[3];
++    uint64_t offset     = ctx->gpr[4];
++    uint32_t buf        = (uint32_t)ctx->gpr[5];
++    uint64_t size       = ctx->gpr[6];
++    uint32_t nwrite_ptr = (uint32_t)ctx->gpr[7];
++    FILE* f = fd_file(fd);
++    if (!f) { ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
++    if (ppu_vm_size && (uint64_t)buf + size > ppu_vm_size) size = ppu_vm_size - buf;
++    fs_prefault(buf, size);   /* kernel READS the buffer; same reserved-page trap */
++    size_t n = 0;
++    HOST_LOCKFILE(f);
++    const int64_t pos = (int64_t)HOST_FTELL64(f);
++    if (HOST_FSEEK64(f, offset) == 0)
++        n = fwrite(vm_base + buf, 1, (size_t)size, f);
++    if (pos >= 0) HOST_FSEEK64(f, pos);
++    HOST_UNLOCKFILE(f);
++    { static int _n = 0;
++      if (PS3_LOG_FIRST(_n, 20) || getenv("FS_READ_ALL"))
++          fprintf(stderr, "[fs] write@ fd=%d off=0x%llX size=%llu -> %zu\n",
++                  fd, (unsigned long long)offset, (unsigned long long)size, n); }
++    if (nwrite_ptr) vm_write64(nwrite_ptr, n);
++    ctx->gpr[3] = CELL_OK;
++}
++
+ /* MLB The Show 16 copies files into its /dev_hdd1 cache in 64 KB chunks, each
+  * written with cellFsAioWrite, and polls a status word its completion callback
+  * sets. With the NID unresolved the submit "succeeded", nothing was written, the
+@@ -1076,6 +1155,8 @@ static void cellFsAioWrite(ppu_context* ctx)
+ 
+ extern "C" void ppu_fs_register(void)
+ {
++    ps3_hle_register_ctx(ps3_compute_nid("cellFsReadWithOffset"), "cellFsReadWithOffset", cellFsReadWithOffset);
++    ps3_hle_register_ctx(ps3_compute_nid("cellFsWriteWithOffset"), "cellFsWriteWithOffset", cellFsWriteWithOffset);
+     ps3_hle_register_ctx(ps3_compute_nid("cellFsOpen"),     "cellFsOpen",     cellFsOpen);
+     /* Register by the literal import NID: LBP imports 0xB1840B53 for
+      * cellFsSdataOpen, which ps3_compute_nid("cellFsSdataOpen") does NOT match
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+index fd2c207..33798db 100644
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -91,7 +91,7 @@ static void sys_process_is_stack(ppu_context* ctx)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * Lightweight mutex (sys_lwmutex) — sysPrxForUser.
++ * Lightweight mutex (sys_lwmutex) â€” sysPrxForUser.
+  *
+  * The CRT guards global/singleton initialization with lwmutexes. If create is
+  * a no-op that never initializes the structure, the guarded init is skipped
+@@ -107,6 +107,9 @@ static void sys_process_is_stack(ppu_context* ctx)
+ #define LWM_OWNER  0x00
+ #define LWM_ATTR   0x08
+ #define LWM_RECUR  0x0C
++/* lv2's free marker. RDR2 checks that one of the first two words of a new
++ * lwmutex is nonzero and aborts otherwise (func at 0x51FC30). */
++#define LWM_FREE   0xFFFFFFFFu
+ /* Owner id = ctx->thread_id, which is nonzero for every thread since main
+  * registers as id 1 (ppu_thread_register_main). The old 0->1 fallback made
+  * main alias the FIRST CREATED thread: each passed the other's recursive
+@@ -129,7 +132,7 @@ static void sys_lwmutex_create(ppu_context* ctx)
+     /* sys_lwmutex_t.attribute is protocol | recursive (the two words of
+      * sys_lwmutex_attribute_t OR-ed together); the recursive word was dropped. */
+     uint32_t recursive = attr ? vm_read32(attr + 4) : 0;
+-    vm_write32(lwm + 0x00, 0);          /* owner */
++    vm_write32(lwm + 0x00, LWM_FREE);   /* owner */
+     vm_write32(lwm + 0x04, 0);          /* waiter */
+     vm_write32(lwm + LWM_ATTR, protocol | recursive);
+     vm_write32(lwm + LWM_RECUR, 0);     /* recursive_count */
+@@ -361,7 +364,7 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
+         return;
+     }
+     vm_write32(lwm + LWM_RECUR, 0);
+-    vm_write32(lwm + LWM_OWNER, 0);
++    vm_write32(lwm + LWM_OWNER, LWM_FREE);
+     if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm);
+         if (sl && sl->holder) { long long held = lwm_now_us() - sl->acq_us;
+             if (held > 100000) {
+@@ -396,7 +399,7 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
+     ctx->gpr[3] = 0;
+ }
+ 
+-/* sys_lwcond (sysPrxForUser) — guest-side condition variable, paired with an
++/* sys_lwcond (sysPrxForUser) â€” guest-side condition variable, paired with an
+  * lwmutex. The CRT and (newly) libsre's cellSpurs create/wait/signal these. Like
+  * sys_lwmutex above, model it directly in guest memory so the args stay GUEST
+  * EAs (the generic adapter would pass them raw and the C sysPrxForUser impl
+@@ -431,7 +434,7 @@ static void sys_lwcond_wait(ppu_context* ctx)
+         uint32_t own = vm_read32(lwmutex + LWM_OWNER);
+         uint32_t rc  = vm_read32(lwmutex + LWM_RECUR);
+         vm_write32(lwmutex + LWM_RECUR, 0);
+-        vm_write32(lwmutex + LWM_OWNER, 0);
++        vm_write32(lwmutex + LWM_OWNER, LWM_FREE);
+         ppu_thread_note_block(ctx->thread_id);
+         lwm_release(sl);
+         Sleep(1);
+@@ -488,7 +491,7 @@ static void sys_mmapper_allocate_memory(ppu_context* ctx)
+     ctx->gpr[3] = 0;
+ }
+ /* sys_mmapper_allocate_memory_from_container(u32 size, u32 container, u64 flags,
+- * vm::ptr<u32> mem_id) -> id in *r6. flОw's CRT uses this for its heap/mutex pool;
++ * vm::ptr<u32> mem_id) -> id in *r6. flÐžw's CRT uses this for its heap/mutex pool;
+  * it was previously UNregistered (CRT saw failure -> "not enough memory"). */
+ static void sys_mmapper_allocate_memory_from_container(ppu_context* ctx)
+ {
+@@ -516,7 +519,7 @@ static void sys_lwmutex_destroy_counted(ppu_context* ctx)
+ /* Real preemptive thread create/exit live in the lv2 syscall layer
+  * (syscalls/sys_ppu_thread.c) and spawn a host thread that runs the guest
+  * entry through the recompiled code. The CRT also reaches them as
+- * sysPrxForUser import NIDs (gen_hle_nids can't see them — they're not defined
++ * sysPrxForUser import NIDs (gen_hle_nids can't see them â€” they're not defined
+  * in the sysPrxForUser lib), so bridge the NIDs to the same implementation.
+  * Without this the CRT's thread/static-init runs through an uninitialised
+  * object table and calls heap addresses as function pointers. */
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 84b7ac9..0b0632a 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -2204,10 +2204,38 @@ void spu_lockguard_check(spu_context* ctx, uint32_t ea, const uint8_t* src, uint
+                 ea, size, os, on, ns, nn); }
+ }
+ 
++/* Experimento: SPU_DUMP_OVL_ALL=<dir>,<lsa> grava cada par distinto (EA, conteudo)
++ * de um GET de pelo menos 4 KB para <lsa>. SPU_DUMP_OVL guarda so o primeiro
++ * conteudo de cada EA, que para um slot ainda vazio sai zerado. */
++void spu_ovl_dump_all(spu_context* ctx, uint32_t ea, uint32_t lsa, const uint8_t* ls, uint32_t size)
++{
++    static int s_on = -1; static char s_dir[400]; static uint32_t s_lsa;
++    if (s_on < 0) { const char* e = getenv("SPU_DUMP_OVL_ALL"); s_on = e && *e;
++        if (s_on) { snprintf(s_dir, sizeof s_dir, "%s", e);
++                    char* c = strchr(s_dir, ','); if (c) { *c = 0; s_lsa = (uint32_t)strtoul(c + 1, 0, 0); } } }
++    if (!s_on || lsa != s_lsa || size < 4096) return;
++    uint64_t h = 1469598103934665603ULL; int nz = 0;
++    for (uint32_t i = 0; i < size; i++) { h ^= ls[i]; h *= 1099511628211ULL; nz |= ls[i]; }
++    if (!nz) return;
++    static uint64_t s_seen[256]; static unsigned s_n; static SRWLOCK s_lk = SRWLOCK_INIT;
++    AcquireSRWLockExclusive(&s_lk);
++    for (unsigned i = 0; i < s_n; i++) if (s_seen[i] == (h ^ ea)) { ReleaseSRWLockExclusive(&s_lk); return; }
++    if (s_n < 256) s_seen[s_n++] = h ^ ea;
++    ReleaseSRWLockExclusive(&s_lk);
++    char path[512];
++    snprintf(path, sizeof path, "%s/ovl_%08X_%016llX.bin", s_dir, ea, (unsigned long long)h);
++    FILE* f = fopen(path, "wb");
++    if (f) { fwrite(ls, 1, size, f); fclose(f); }
++    fprintf(stderr, "[spu-ovl-all] img=%d ea=0x%08X lsa=0x%05X size=%u hash=%016llX\n",
++            ctx->image_id, ea, lsa, size, (unsigned long long)h);
++}
++
+ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint32_t size)
+ {
+     uint32_t lsa = (uint32_t)(ls - ctx->ls);
+     spu_ovl_dump(ctx, ea, lsa, ls, size);
++    { extern void spu_ovl_dump_all(spu_context*, uint32_t, uint32_t, const uint8_t*, uint32_t);
++      spu_ovl_dump_all(ctx, ea, lsa, ls, size); }
+     for (unsigned slot = 0; slot < 4; ++slot) {
+         if (!ctx->resident_code[slot].image_id) continue;
+         uint32_t base = ctx->resident_code[slot].lsa;
+@@ -2684,6 +2712,16 @@ static int spu_smc_microstep(spu_context* ctx)
+     return 0;
+ }
+ 
++/* Is the pc inside runtime-loaded code the interpreter should run? */
++int spu_interp_unlifted_pc(const spu_context* ctx)
++{
++    static int s_on = -1;
++    if (s_on < 0) s_on = getenv("SPU_INTERP_UNLIFTED") ? 1 : 0;
++    const uint32_t p = ctx->pc & SPU_LS_MASK;
++    if (!s_on || ctx->policy_mode || p < SPU_JM2_KERNEL_BASE || p + 3 >= SPU_LS_SIZE) return 0;
++    return (ctx->ls[p] | ctx->ls[p + 1] | ctx->ls[p + 2] | ctx->ls[p + 3]) != 0;
++}
++
+ void spu_indirect_branch(spu_context* ctx)
+ {
+     /* Real SPU bi/bisl mask the target to the 256 KB local store; the high bits
+@@ -2692,6 +2730,22 @@ void spu_indirect_branch(spu_context* ctx)
+      * and falls into branch-to-0. All lifted funcs live below SPU_LS_SIZE, so
+      * masking is a no-op for already-valid targets. */
+     ctx->pc &= SPU_LS_MASK;
++    /* Diagnostico: SPU_MP3_STUB=<r3>. O decodificador MP3 do Multistream fica em
++     * LS 0x1A100 e vem de flashMP3.pic, ausente aqui. Retorna direto com esse r3
++     * para separar "o audio trava a carga" de outras causas. */
++    { static long s_stub = -2;
++      if (s_stub == -2) { const char* e = getenv("SPU_MP3_STUB"); s_stub = e ? atol(e) : -3; }
++      if (s_stub != -3 && ctx->pc == 0x1A100u && !ctx->ls[0x1A100] && !ctx->ls[0x1A101]) {
++          static int _n = 0;
++          if (PS3_LOG_FIRST(_n, 12))
++              fprintf(stderr, "[mp3-stub] img=%d r0=0x%05X r3=0x%08X r4=0x%05X r5=0x%05X r7=0x%08X r8=0x%08X -> %ld\n",
++                      ctx->image_id, ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[3]._u32[0], ctx->gpr[4]._u32[0],
++                      ctx->gpr[5]._u32[0], ctx->gpr[7]._u32[0], ctx->gpr[8]._u32[0], s_stub);
++          memset(&ctx->gpr[3], 0, sizeof ctx->gpr[3]);
++          ctx->gpr[3]._u32[0] = (uint32_t)s_stub;
++          ctx->pc = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
++          return;
++      } }
+     /* Interrupt-return register restore (see spu_drain.c spu_irq_regs_save):
+      * the WWS handler's save/restore shim lives at unlifted top-of-LS, so we
+      * enforce the preserve-all-registers hardware contract here -- the first
+@@ -2961,7 +3015,14 @@ void spu_indirect_branch(spu_context* ctx)
+               if (PS3_LOG_FIRST(_n, 8))
+                   fprintf(stderr, "[spu] img=%d interpreting unlifted LS 0x%05X "
+                           "(runtime-loaded code)\n", ctx->image_id, p);
+-              spu_interp_run(ctx, p);
++              /* The module is entered by bisl, so its return is r0. Without this
++               * stop the interpreter walks past it into the caller's lifted code,
++               * and the C frames of that caller are never returned to. */
++              const uint32_t ret = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
++              spu_interp_run_until(ctx, p, ret);
++              if (ctx->image_id >= 0 && (ctx->status & SPU_STATUS_RUNNING) &&
++                  (ctx->pc & SPU_LS_MASK) != ret && spu_lifted_lookup(ctx, ctx->pc))
++                  g_spu_trampoline_fn = spu_indirect_branch;
+               return;
+           } }
+         spu_halt(ctx);
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index 400b2ba..6a1928f 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -541,6 +541,13 @@ static inline void spu_ls_write32(spu_context* ctx, uint32_t lsa, uint32_t val)
+ #if defined(__ARM_NEON)
+ #include <arm_neon.h>     /* the quadword swap is one rev32 */
+ #endif
++/* SPU_LS_PROBES=0 compiles the LS diagnostics (SPU_LS_WATCH, SPU_SMC_WATCH,
++ * SPU_LS_LOWREAD and the WWS probes) out of every LS access in the translation
++ * unit: a per-TU build option for the lifted SPU sources, after #556. Each check
++ * is a load and a branch per access. Default 1 keeps them available. */
++#ifndef SPU_LS_PROBES
++#define SPU_LS_PROBES 1
++#endif
+ /* SPU_LS_VEC: the quadword as one 16-byte load or store and one pshufb that
+  * byte-swaps each word. The four 32-bit stores of the scalar form, read back by
+  * the next 16-byte load of the register, cannot be store-forwarded: a stall on
+@@ -644,8 +651,10 @@ static SPU_NOINLINE_COLD void spu_ls_read_diag(const spu_context* ctx, uint32_t
+ static inline u128 spu_ls_read128(const spu_context* ctx, uint32_t lsa)
+ {
+     u128 v;
++#if SPU_LS_PROBES
+     if (__builtin_expect(g_spu_ls_rdiag != 0, 0))
+         spu_ls_read_diag(ctx, lsa);
++#endif
+     lsa &= SPU_LS_MASK & ~0xFu;
+     const uint8_t* p = &ctx->ls[lsa];
+ #if defined(__ARM_NEON)
+@@ -765,8 +774,10 @@ static inline void spu_ls_write128(spu_context* ctx, uint32_t lsa, u128 val)
+         p[i*4 + 3] = (uint8_t)w;
+     }
+ #endif
++#if SPU_LS_PROBES
+     if (__builtin_expect(g_spu_ls_wdiag != 0, 0))
+         spu_ls_write_diag(ctx, lsa, val);
++#endif
+ }
+ 
+ /* ---------------------------------------------------------------------------
+diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
+index 49bc2b9..b5bc3e9 100644
+--- a/runtime/spu/spu_drain.c
++++ b/runtime/spu/spu_drain.c
+@@ -619,6 +619,24 @@ void spu_drain_call(spu_context* ctx, uint32_t return_pc)
+                 continue;
+             }
+         }
++        /* A lifted helper returned into a runtime-loaded module. There is no
++         * lifted entry there, and restarting dispatch would drop the C frames of
++         * the code that called the module: finish the module here instead. */
++        {
++            extern int spu_interp_unlifted_pc(const spu_context*);
++            extern uint32_t spu_interp_run_until(spu_context*, uint32_t, uint32_t);
++            extern void (*spu_lifted_lookup(const spu_context*, uint32_t))(spu_context*);
++            const uint32_t ret = return_pc & SPU_LS_MASK;
++            if (spu_interp_unlifted_pc(ctx)) {
++                ctx->drain_ret_pc = ret;
++                spu_interp_run_until(ctx, ctx->pc & SPU_LS_MASK, ret);
++                if (ctx->status & SPU_STATUS_RUNNING) {
++                    if ((ctx->pc & SPU_LS_MASK) != ret && spu_lifted_lookup(ctx, ctx->pc))
++                        *tramp = spu_indirect_branch;
++                    continue;
++                }
++            }
++        }
+         {
+             extern void spu_restart_dispatch(spu_context*);
+             SPU_DRAIN_POP_IRQ();
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index 9beb893..f519251 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -43,6 +43,11 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include "ps3emu/log_first.h"
++#include <stddef.h>
++#include <malloc.h>
++#ifdef _WIN32
++#include <windows.h>
++#endif
+ #include "ps3emu/ps3_env_once.h"   /* ps3_env_once: each switch looked up once */
+ 
+ extern uint8_t* vm_base;
+@@ -122,10 +127,14 @@ enum {
+  * resolve a chain handle to it. */
+ static uint8_t  s_job_ls[SPU_LS_SIZE];
+ static int      s_job_ls_valid;
++/* Copying 256 KB after every job only pays off for a title that reads it. The
++ * first lookup turns retention on; until then no job keeps its store. */
++static volatile int s_job_ls_wanted;
+ uint32_t        g_spurs_job_ls_handle;   /* set by the chain walker */
+ 
+ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+ {
++    s_job_ls_wanted = 1;
+     if (!s_job_ls_valid || !handle || handle != g_spurs_job_ls_handle) return 0;
+     return s_job_ls;
+ }
+@@ -156,6 +165,31 @@ SPURS_JOB_TLS int g_spurs_job_mbox_valid;
+ SPURS_JOB_TLS uint32_t g_spurs_job_spu_num;
+ void spurs_job_set_spu_num(uint32_t n) { g_spurs_job_spu_num = n; }
+ 
++/* The calling thread's job context, kept between jobs. A chain walker is a
++ * thread made per Run, so the context is freed when its thread ends (FLS
++ * callback); one leaked per walker would add up to gigabytes. */
++static _Thread_local spu_context* t_ctx;
++static _Thread_local uint32_t t_dirty;
++#ifdef _WIN32
++static void WINAPI job_ctx_free(void* p) { if (p) _aligned_free(p); }
++#endif
++static spu_context* job_ctx_get(void)
++{
++    if (t_ctx) return t_ctx;
++    spu_context* c = (spu_context*)_aligned_malloc(sizeof(spu_context), 64);
++    if (!c) return NULL;
++#ifdef _WIN32
++    static volatile LONG s_fls = -1;
++    if (s_fls == -1) {
++        DWORD k = FlsAlloc(job_ctx_free);
++        if (InterlockedCompareExchange(&s_fls, (LONG)k, -1) != -1) FlsFree(k);
++    }
++    if (s_fls != -1) FlsSetValue((DWORD)s_fls, c);
++#endif
++    t_dirty = SPU_LS_SIZE;
++    return t_ctx = c;
++}
++
+ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+                       uint32_t job_ea, uint32_t job_desc_size)
+ {
+@@ -180,8 +214,29 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+         return -1;
+     }
+ 
+-    uint8_t* ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
+-    if (!ls) return -1;
++    /* The store is built in the context itself. spu_context_init clears all
++     * of it, which is the zeroed LS the calloc used to provide, without the
++     * calloc and the 256 KB copy into ctx.ls that followed. */
++    static int fullclear = -1;
++    if (fullclear < 0) fullclear = getenv("SPURS_JOB_FULLCLEAR") ? 1 : 0;
++    spu_context* const cp = job_ctx_get();
++    if (!cp) return -1;
++    if (fullclear || t_dirty >= SPU_LS_SIZE - 0x1000u) {
++        spu_context_init(cp, 0);
++    } else {
++        /* What spu_context_init clears, except the store past what the last
++         * job was given: the binary's span is overwritten by the copy below,
++         * and the top page holds the context and the descriptor. */
++        memset(cp->gpr, 0, sizeof(cp->gpr));
++        if (t_dirty > size_bin) memset(cp->ls_store + size_bin, 0, t_dirty - size_bin);
++        memset(cp->ls_store + SPU_LS_SIZE - 0x1000u, 0, 0x1000u);
++        memset((char*)&cp->ls, 0, sizeof(*cp) - offsetof(spu_context, ls));
++        cp->ls     = cp->ls_store;
++        cp->spu_id = 0;
++        cp->status = SPU_STATUS_STOPPED;
++    }
++#define ctx (*cp)
++    uint8_t* ls = ctx.ls;
+ 
+     /* ---- binary at LS 0 (PIC, so delta 0 keeps the lifted addresses) ---- */
+     memcpy(ls, vm_base + ea_bin, size_bin);
+@@ -197,7 +252,12 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * like floats -- they were opcodes. */
+     uint32_t io_ls     = p;                p += ALIGN1024(size_io);
+     uint32_t out_ls    = p;                p += ALIGN1024(size_out);
+-    if (use_io && !out_ls) out_ls = io_ls;    /* in-out: output shares ioBuffer */
++    /* An in-out job has no output buffer, and its descriptor no output element:
++     * the title's job builder leaves it out and sizeOut at 0. The job's entry
++     * code tests oBuffer to decide whether that element is there, so a non-null
++     * base made it read one list element too far and take a pointer for its
++     * argument count (RDR's EDGE job asked for a 1.3 GB GET). */
++    if (use_io && !size_out) out_ls = 0;
+     uint32_t ss_size   = ALIGN1024(size_scr + size_stk);
+     /* The scratch pointer is the BASE OF THE SCRATCH+STACK BLOCK, and it is
+      * valid even when sizeScratch is 0 -- a zero-length buffer still has an
+@@ -268,13 +328,16 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * job's own instruction words and it indexed per-SPU tables with an opcode
+      * and halted. The lifted code never reads those bytes as data, so overlay
+      * the kernel's view: SPU 0, our DMA tag, tracing off. */
+-    if (jm_iface) {
+-        memset(ls + 0x170, 0, 0x10);
+-        memset(ls + 0x1C0, 0, 0x10);
+-        ls32(ls, 0x1C8, g_spurs_job_spu_num);
+-        ls32(ls, 0x1CC, JOB_DMA_TAG);
++    /* RDR's jobs have no "JOBCRT Ver13" marker and read the same fields:
++     * cellSpursGetCurrentSpuId is a load of 0x1C8 in every one of them. Gated on
++     * the marker, they got one of their own instruction words as the SPU number,
++     * so the kernel's view goes into every job. */
++    memset(ls + 0x170, 0, 0x10);
++    memset(ls + 0x1C0, 0, 0x10);
++    ls32(ls, 0x1C8, g_spurs_job_spu_num);
++    ls32(ls, 0x1CC, JOB_DMA_TAG);
++    if (jm_iface)
+         memset(ls + 0x210, 0, 0x10);
+-    }
+     ls32(ls, ctx_ls + JC_SIZE_JOB_DESC,
+          ((dsz == 64 ? 0u : (dsz / 128u) & 0xFu) << 28) | jm_iface);
+     ls16(ls, ctx_ls + JC_NUM_IO_BUFFER,    (uint16_t)n_dma);
+@@ -364,10 +427,8 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+     }
+ 
+     /* ---- enter the job -------------------------------------------------- */
+-    spu_context ctx;
+-    spu_context_init(&ctx, 0);
++    t_dirty = (p + 0x4000u < SPU_LS_SIZE) ? p + 0x4000u : SPU_LS_SIZE;
+     ctx.image_id = image_id;
+-    memcpy(ctx.ls, ls, SPU_LS_SIZE);
+     /* SPU stack grows down. A function saves its link register in its
+      * caller's frame, at 16($sp), so the entry's first store lands 16 bytes
+      * above $sp. The cache buffers start right at stack_top: with $sp at
+@@ -402,7 +463,8 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * comment here claimed they carried the title's bus counts; they do not,
+      * and feeding them into the completion event turned 0x40000000 into a 1 GB
+      * allocation request. Kept because the printf service needs them. */
+-    memcpy(s_job_ls, ctx.ls, SPU_LS_SIZE);   /* keep the store readable */
++    if (s_job_ls_wanted)
++        memcpy(s_job_ls, ctx.ls, SPU_LS_SIZE);   /* keep the store readable */
+     /* TEMP SPURS_JOB_LSWORD=<img>:<lsa>: after a job of that image, print the
+      * LS word at lsa and every other LS offset holding the same value. */
+     { static int img = -2; static uint32_t lsa; static int n = 0;
+@@ -419,7 +481,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+           }
+           fprintf(stderr, "\n");
+       } }
+-    s_job_ls_valid = 1;
++    if (s_job_ls_wanted) s_job_ls_valid = 1;
+ 
+     g_spurs_job_mbox      = spu_channel_has_data(&ctx.ch_out_mbox)
+                           ? ctx.ch_out_mbox.value : 0;
+@@ -452,8 +514,8 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+     }
+ 
+     spu_mfc_release(&ctx);
+-    spu_coh_unregister(&ctx);   /* stack local: out of the reserver set */
++    spu_coh_unregister(&ctx);   /* out of the reserver set until the next job */
+     { extern void spu_mfc_release(spu_context*); spu_mfc_release(&ctx); }
+-    free(ls);
+     return 0;
++#undef ctx
+ }
+diff --git a/runtime/syscalls/sys_semaphore.h b/runtime/syscalls/sys_semaphore.h
+index 38f7b65..4784ab4 100644
+--- a/runtime/syscalls/sys_semaphore.h
++++ b/runtime/syscalls/sys_semaphore.h
+@@ -25,7 +25,11 @@
+ extern "C" {
+ #endif
+ 
+-#define SYS_SEMAPHORE_MAX  256
++/* RDR2 keeps a pool of 1024 semaphores and has over 280 live by the time its
++ * streamers start. At 256, sys_semaphore_create failed with EAGAIN, the title's
++ * wrapper handed back a null handle, and its wait and post silently did nothing:
++ * every [RAGE] Reader thread exited at once and no packfile data was ever read. */
++#define SYS_SEMAPHORE_MAX  2048
+ 
+ typedef struct sys_semaphore_info {
+     int      active;
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index 3a02281..da32e0d 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -264,7 +264,32 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+          * and busy-spins at full speed (so the wait is effectively a no-op).
+          * Busy-wait to a precise QPC deadline, yielding inside the spin
+          * (SwitchToThread) so a sibling host thread the guest may be waiting on
+-         * still gets the core. Mirrors RPCS3's "Usleep Only" TSC busy-tail. */
++         * still gets the core. Mirrors RPCS3's "Usleep Only" TSC busy-tail.
++         *
++         * PS3_USLEEP_WAIT_US=<n> (default 0, off): a sub-millisecond sleep of
++         * at least n us waits on a high-resolution waitable timer instead. The
++         * spin keeps a logical processor busy for the whole sleep, and a
++         * thread that polls with ~800 us sleeps (GoW:A's EdgeWatchdog) holds
++         * one all the time; such a poller only needs to wake roughly on time. */
++        static int s_wait_us = -1;
++        if (s_wait_us < 0) { const char* e = getenv("PS3_USLEEP_WAIT_US"); s_wait_us = e ? atoi(e) : 0; }
++        if (s_wait_us > 0 && usec >= (uint64_t)s_wait_us) {
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++            static __declspec(thread) HANDLE t_timer;
++            if (!t_timer)
++                t_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                                 TIMER_ALL_ACCESS);
++            if (t_timer) {
++                LARGE_INTEGER due;
++                due.QuadPart = -((LONGLONG)usec * 10);
++                if (SetWaitableTimer(t_timer, &due, 0, NULL, NULL, FALSE)) {
++                    WaitForSingleObject(t_timer, INFINITE);
++                    return CELL_OK;
++                }
++            }
++        }
+         ensure_qpc_init();
+         LARGE_INTEGER qpc_start, qpc_now;
+         QueryPerformanceCounter(&qpc_start);

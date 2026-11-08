@@ -1,0 +1,321 @@
+{
+ "_comment": "Identificadores dos programas SPU traduzidos neste port (nenhum byte de codigo). Identifiers of the SPU programs lifted for this port (no code bytes).",
+ "elf_embedded": {
+  "how": "PORT_SPU_INPUTS=RDR2.elf (ps3recomp build_spu_workloads.py), regenerated at configure time",
+  "programs": [
+   {
+    "sha256": "98b24de8abdd9c74672886cd0cd846078f863126709a002871d92525769f3ebe",
+    "size": 28196,
+    "entry": "0x3050",
+    "fingerprint": "0D62F2E0DE6D43FA",
+    "elf_offsets": [
+     "0x11d2a00"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "59de62e2f5f57d27cc1aaa4bae415ae4622be3b9a116eef7be41601783a8c106",
+    "size": 66912,
+    "entry": "0x3070",
+    "fingerprint": "41B2997381377BDD",
+    "elf_offsets": [
+     "0x1229800"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "3a3d92b337ba6b40671acecb69a3dfb7129cd824ea29810aa828018ca40b6934",
+    "size": 77168,
+    "entry": "0x3070",
+    "fingerprint": "20256B262770FB34",
+    "elf_offsets": [
+     "0x1239d80"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "1db1ea67cfb354e2fc14eed3f5857ba22acacfb95b277ddaf799f437326941fc",
+    "size": 86052,
+    "entry": "0x3070",
+    "fingerprint": "D87FFA4A06D2C7BE",
+    "elf_offsets": [
+     "0x1260f80"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "828e7e1fad447d4cc7b87123600cdb9df8532cc026bef6db39032258ccf2e0f2",
+    "size": 66980,
+    "entry": "0x3070",
+    "fingerprint": "9C6A8D948E77B598",
+    "elf_offsets": [
+     "0x1276000"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "e443752d41852a430d32e17dc2dfa5c8821f28caeee965207655b1ae16b84b0f",
+    "size": 31308,
+    "entry": "0x3070",
+    "fingerprint": "FEDE86FDA3487613",
+    "elf_offsets": [
+     "0x1286600"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "6c90dd52025f5658527da36494b4cea173f482030af81ff837753d3abe05a516",
+    "size": 117072,
+    "entry": "0x3070",
+    "fingerprint": "D44A023874EF6A84",
+    "elf_offsets": [
+     "0x128e080"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "14454462b16430d61e60990619a5a513f40f38fe35d00ffc6d84ea739b326000",
+    "size": 18260,
+    "entry": "0x3070",
+    "fingerprint": "A7BA7DCC614F06A8",
+    "elf_offsets": [
+     "0x12cab80"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "ed8663640d0259176e31478684089aed6bb7c46b6b56e871063e60153072e31b",
+    "size": 95420,
+    "entry": "0x3050",
+    "fingerprint": "965A75F2CE217AEB",
+    "elf_offsets": [
+     "0x1303400"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "a84f54163514cc404109333159c5268f3268287af84f646f782bebe3068fca7a",
+    "size": 4344,
+    "entry": "0x130",
+    "fingerprint": "7F319FA434E153D7",
+    "elf_offsets": [
+     "0x13d8a80"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "6408c20752f0242698ecbbe6864b17c5d4c20b5523296ae271e6d0e61fa2710b",
+    "size": 13544,
+    "entry": "0x180",
+    "fingerprint": "FB1B1C87455789ED",
+    "elf_offsets": [
+     "0x13da080"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "357bad237a3a6917dc40a85a8745740dc681275f5cffb7e79dd389678a24e8f7",
+    "size": 6492,
+    "entry": "0x1c8",
+    "fingerprint": "34FE37BE8CA53314",
+    "elf_offsets": [
+     "0x13dd580"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "d0eaa4de38867d8fc7c445697f925ca583b5162f840a0b1f0f7f586027bab10d",
+    "size": 796,
+    "entry": "0x60",
+    "fingerprint": "1D7B07D05C67F666",
+    "elf_offsets": [
+     "0x13def00"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "5934df1d3190348bfe461c9da9868983e2bf550dffe4c4f0dd6b422600817100",
+    "size": 4348,
+    "entry": "0x100",
+    "fingerprint": "7375BBC477AAECB6",
+    "elf_offsets": [
+     "0x13df280"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "ec70658eec138ebbcd1034da4871fb3ce3a7393d3bb9a734d8944ff92821603a",
+    "size": 2188,
+    "entry": "0x48",
+    "fingerprint": "735F712FEC4D0F54",
+    "elf_offsets": [
+     "0x13e0380"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "4811eda8dcc22fa0c25b7ebd1fb7d496274614f0407eef73990c1e8b96c946f0",
+    "size": 796,
+    "entry": "0x60",
+    "fingerprint": "F5ED1DD794BB12C3",
+    "elf_offsets": [
+     "0x13e0c80"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "299259ee67da8fbd0c1a16c02fc9ea27f7d4b3846468f95a05234dd8891fca4a",
+    "size": 3284,
+    "entry": "0x60",
+    "fingerprint": "8F517E79FC450C7B",
+    "elf_offsets": [
+     "0x13e1000"
+    ],
+    "status": "registered"
+   },
+   {
+    "sha256": "6f56a7a8cd24a9648c2b4b469aa7f08a8c361227135d6c0333850272daad3ced",
+    "size": 10412,
+    "entry": "0x2b8",
+    "fingerprint": "21F581E3003E1B3E",
+    "elf_offsets": [
+     "0x13e1d00"
+    ],
+    "status": "registered"
+   }
+  ]
+ },
+ "spurs_jobs": {
+  "how": "captured with SPU_DUMP_MISS, lifted by analysis/tools/lift_jobs.py into local/spu_jobs; fingerprint = FNV-1a 64 of the raw job bytes, as spu_workload_dispatch_job computes it",
+  "jobs": [
+   {
+    "fingerprint": "01F70F418B491AB1",
+    "size": 3472
+   },
+   {
+    "fingerprint": "03B3F699089214AD",
+    "size": 12944
+   },
+   {
+    "fingerprint": "0D71FF8973922C40",
+    "size": 13328
+   },
+   {
+    "fingerprint": "0EB41E22F98E885F",
+    "size": 62608
+   },
+   {
+    "fingerprint": "297DE82BB451E517",
+    "size": 98176
+   },
+   {
+    "fingerprint": "2CFF409453999B21",
+    "size": 111664
+   },
+   {
+    "fingerprint": "2F6968F35460CAF7",
+    "size": 86784
+   },
+   {
+    "fingerprint": "338C59621B529B59",
+    "size": 2320
+   },
+   {
+    "fingerprint": "498819A6CB3804EE",
+    "size": 14640
+   },
+   {
+    "fingerprint": "4FFF53591CA96FB1",
+    "size": 79456
+   },
+   {
+    "fingerprint": "5A59D1DF1B4AF642",
+    "size": 7344
+   },
+   {
+    "fingerprint": "5D357787B83EB63F",
+    "size": 19984
+   },
+   {
+    "fingerprint": "6A5CCACFAE74D731",
+    "size": 83072
+   },
+   {
+    "fingerprint": "737FDFE855D70DCD",
+    "size": 18576
+   },
+   {
+    "fingerprint": "763921CDE433197C",
+    "size": 22496
+   },
+   {
+    "fingerprint": "9EF7428F648D0C00",
+    "size": 4160
+   },
+   {
+    "fingerprint": "A6723FF0E8E668A7",
+    "size": 40848
+   },
+   {
+    "fingerprint": "A7AFFC2E35038D65",
+    "size": 6096
+   },
+   {
+    "fingerprint": "B25C4B6BBE0CBA77",
+    "size": 69120
+   },
+   {
+    "fingerprint": "C5F9D98E7411F602",
+    "size": 6384
+   },
+   {
+    "fingerprint": "C895B508A51CD2A6",
+    "size": 79376
+   },
+   {
+    "fingerprint": "CD76C18A367F343E",
+    "size": 5168
+   },
+   {
+    "fingerprint": "EFF34C7649082643",
+    "size": 18384
+   },
+   {
+    "fingerprint": "F074D3FEB9EBC9E5",
+    "size": 4528
+   },
+   {
+    "fingerprint": "F4BEE072553B8DCC",
+    "size": 9776
+   },
+   {
+    "fingerprint": "F84C065A2C0A3B42",
+    "size": 43216
+   },
+   {
+    "fingerprint": "FFC6A7022B664889",
+    "size": 7168
+   }
+  ]
+ },
+ "multistream_dsp": {
+  "how": "captured with SPU_DUMP_OVL=<dir>,0x36800, lifted by analysis/tools/lift_dsp.py into local/spu_dsp",
+  "plugins": [
+   {
+    "ea": "0x11E19600",
+    "ls": "0x36800",
+    "slot_bytes": 12288
+   },
+   {
+    "ea": "0x11E1C600",
+    "ls": "0x36800",
+    "slot_bytes": 12288
+   },
+   {
+    "ea": "0x11E1F600",
+    "ls": "0x36800",
+    "slot_bytes": 12288
+   }
+  ]
+ }
+}

@@ -1,0 +1,119 @@
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index a657ba6..fe31a82 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -4554,7 +4554,12 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+         # the indexed table load: `lwzx`, or `lwax` (the sign-extending load
+         # some compilers use for signed offset tables; the entries are treated
+         # as signed below either way)
+-        lwzx = next((w for w in reversed(win) if w.mnemonic in ('lwzx', 'lwax')), None)
++        # Prefer the load that defines the mtctr source: RDR2's interpreter does
++        # `lwzx r6,r15,r6; lwzx r3,r3,r4; mtctr r6`, and the nearest lwzx is data.
++        lwzx = next((w for w in reversed(win) if w.mnemonic in ('lwzx', 'lwax')
++                     and w.operands.split(',')[0].strip() == rC), None)
++        if lwzx is None:
++            lwzx = next((w for w in reversed(win) if w.mnemonic in ('lwzx', 'lwax')), None)
+         # 64-bit offset-table idiom emits `sldi rIdx,idx,2; add rT,rIdx,rBase;
+         # lwz rEnt,0(rT)` instead of `lwzx rEnt,rIdx,rBase` (gcc -O2 PPC64).
+         # Synthesize the equivalent lwzx operands (rEnt,rA,rB) so the base/offset
+@@ -4666,6 +4671,24 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+                 if w.mnemonic in ('lwz', 'ld') and len(a) == 2 and '(r2)' in a[1]:
+                     disp = mem_disp(a[1]); r_base = cand
+                     base_is_ld = (w.mnemonic == 'ld')
++                elif w.mnemonic in ('addi', 'addic') and len(a) == 3:
++                    # CONSTANT base, no TOC: `lis rB,hi; addic rB,rB,lo`. RDR2's
++                    # threaded interpreters keep the opcode table in a register
++                    # set once at entry (0x141ECC8 via r15, 0x14181F8 via r24),
++                    # and every handler ends in its own lwzx/mtctr/bctr.
++                    try:
++                        _lo = int(a[2], 0)
++                    except ValueError:
++                        _lo = None
++                    if _lo is not None:
++                        for w2 in reversed([x for x in win_cand if x.addr < w.addr]):
++                            b = [x.strip() for x in w2.operands.split(',')]
++                            if not b or b[0] != a[1] or w2.mnemonic.startswith(('st', 'lf')):
++                                continue
++                            if w2.mnemonic == 'lis' and len(b) == 2:
++                                disp = ('abs', ((int(b[1], 0) << 16) + _lo) & 0xFFFFFFFF)
++                                r_base = cand
++                            break               # nearest definition wins
+                 elif w.mnemonic in ('lwz', 'ld') and len(a) == 2 and '(r1)' in a[1]:
+                     # SPILLED base: the table address was TOC-loaded earlier,
+                     # stored to a stack slot, and reloaded at the dispatch
+@@ -4833,7 +4856,10 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+                     if read_u32(_ea):
+                         return None
+                     return read_u32((_ea + 4) & 0xFFFFFFFF)
+-                table_base = _read_ptr(cand + disp, base_is_ld)
++                if isinstance(disp, tuple):
++                    table_base = disp[1]        # constant base: TOC not involved
++                else:
++                    table_base = _read_ptr(cand + disp, base_is_ld)
+                 if table_base is not None and disp2 is not None:
+                     table_base = _read_ptr(table_base + disp2, disp2_is_ld)
+                 _dbg(all_insns[i].addr, f"r_base={r_base} cand_toc=0x{cand:X} table_base={None if table_base is None else hex(table_base)} count={count} is_offset={is_offset} text=[0x{text_lo:X},0x{text_hi:X})")
+diff --git a/tools/test_ppu_jumptables.py b/tools/test_ppu_jumptables.py
+index 64ed245..5bc4fae 100644
+--- a/tools/test_ppu_jumptables.py
++++ b/tools/test_ppu_jumptables.py
+@@ -356,8 +356,59 @@ def test_bound_compare_beyond_window():
+           [first + 4 * k for k in range(n)])
+ 
+ 
++def w_addic(rt, ra, si):   return (12 << 26) | (rt << 21) | (ra << 16) | (si & 0xFFFF)
++def w_lis(rt, si):         return w_addis(rt, 0, si)
++
++
++RDR2_TABLE = 0x10FFF0                               # 0x110000 - 0x10
++
++
++def rdr2_mem():
++    return {RDR2_TABLE: 0x10100, RDR2_TABLE + 4: 0x10104, RDR2_TABLE + 8: 0}
++
++
++def test_lis_addic_constant_base():
++    """Threaded interpreter: the table base is a constant, never in the TOC.
++
++        lis r15, 0x11 ; addic r15, r15, -0x10    <- base set once at entry
++        rlwinm r4, r3, 2, 0, 29
++        lwzx r4, r15, r4 ; mtctr r4 ; bctr       <- every handler ends like this
++
++    Before the fix no candidate resolved and all 172 such RDR2 dispatchers
++    lifted to unresolved indirect calls."""
++    words = [w_lis(15, 0x11), w_addic(15, 15, -0x10), w_slwi(4, 3, 2),
++             w_lwzx(4, 15, 4), w_mtctr(4), w_bctr()]
++    check("lis/addic constant base", discover(words, rdr2_mem()), [0x10100, 0x10104])
++
++
++def test_lwzx_that_feeds_mtctr_wins():
++    """Two indexed loads: the nearest is data, the mtctr source is the table.
++
++        lwzx r6, r15, r6        <- next handler
++        lwzx r3, r3, r4         <- operand of the current bytecode
++        mtctr r6 ; bctr
++
++    Taking the nearest lwzx looked for a base in r3/r4 and dropped RDR2's
++    dispatchers at 0xD18544 and 0xD18914."""
++    words = [w_lis(15, 0x11), w_addic(15, 15, -0x10), w_slwi(6, 6, 2), w_slwi(4, 4, 2),
++             w_lwzx(6, 15, 6), w_lwzx(3, 3, 4), w_mtctr(6), w_bctr()]
++    check("lwzx feeding mtctr wins", discover(words, rdr2_mem()), [0x10100, 0x10104])
++
++
++def test_addic_without_lis_is_no_base():
++    """A base register added to a value that is not `lis` is not a constant.
++    The memory at the would-be address holds valid targets on purpose, so a
++    loose match would report a false table here."""
++    words = [w_lwz(15, 3, 0), w_addic(15, 15, -0x10), w_slwi(4, 3, 2),
++             w_lwzx(4, 15, 4), w_mtctr(4), w_bctr()]
++    check("addic over a non-constant is rejected", discover(words, rdr2_mem()), None)
++
++
+ def main() -> int:
+     test_encodings()
++    test_lis_addic_constant_base()
++    test_lwzx_that_feeds_mtctr_wins()
++    test_addic_without_lis_is_no_base()
+     test_absolute_base_is_second_operand()
+     test_offset_idiom()
+     test_offset_idiom_lwax()
