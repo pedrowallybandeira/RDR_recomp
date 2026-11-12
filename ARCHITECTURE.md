@@ -17,8 +17,11 @@
         │
         │    boot com SPU_DUMP_MISS / SPU_DUMP_OVL
         └──► dumps ──► lift_jobs.py / lift_dsp.py ──► local\spu_jobs (27) / local\spu_dsp (3)
+ flashMP3.pic do seu firmware ──► lift_mp3.py ──► local\spu_mp3 (decodificador MP3)
                                                                  │
- ps3recomp v0.19.0 ──► prepare_overlay.ps1 + patch ──► local\overlay (15 arquivos)
+ ps3recomp v0.19.0 ──► prepare_toolkit.ps1 + 12 PRs ──► local\ps3recomp-rdr
+                         │
+                         └──► prepare_overlay.ps1 + patch ──► local\overlay (17 arquivos)
                                                                  │
                                     port\CMakeLists.txt + main.cpp ▼
                                          local\build\MyGameRecomp.exe ──► boot_seguro.ps1
@@ -36,11 +39,13 @@
 
 | Peça | Onde |
 | :--- | :--- |
+| PRs abertos do ps3recomp usados na base | `patches/ps3recomp-v0.19.0-upstream-prs.patch` (lista em `patches/README.md`) |
 | Mudanças no runtime e nas bibliotecas | `patches/ps3recomp-v0.19.0-rdr.patch` (tabela em `patches/README.md`) |
+| Float rápido do áudio | `port/src/audio_float/spu_helpers.h` |
 | Tabelas de salto dos interpretadores de bytecode | `patches/ps3recomp-v0.18.0-ppu_lifter.patch` |
 | Executável | `port/` (motor live-draw, `PARAM.SFO`, NIDs extras, `fs_area.c`) |
 | Programas SPU | `spu/images.json` (só identificadores) |
-| Padrões de execução | `scripts/boot_seguro.ps1`: `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `PS3_VERBOSE=0` |
+| Padrões de execução | `scripts/boot_seguro.ps1`: `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `GCM_SUBCH1_M2MF=1`, `PPU_PRIO_ABOVE=2040`, `PS3_VERBOSE=0` |
 | Build | llvm-mingw (clang), Ninja; PPU a `-O1 -fwrapv`; SPU a `-O2 -mavx2 -mfma -ffp-contract=off` |
 
 ## Fatos medidos do jogo
@@ -56,4 +61,4 @@
 
 ## English summary
 
-The game's decrypted ELF (produced by the user) goes through ps3recomp's `ppu_loader.py`, `scripts/prep_lift.py` and the v0.18.0 `ppu_lifter.py` with this repo's jump-table patch, giving 66 lifted C++ translation units. The 18 SPU programs embedded in the ELF are found and lifted at configure time (`PORT_SPU_INPUTS`); the 27 SPURS jobs and 3 Multistream DSP plugins that the game loads from its data files are captured at runtime (`SPU_DUMP_MISS`, `SPU_DUMP_OVL`) and lifted by `analysis/tools/lift_jobs.py` and `lift_dsp.py`. Fifteen ps3recomp v0.19.0 files are patched into `local/overlay`, and `port/` links everything into `MyGameRecomp.exe`, which is only ever started by `scripts/boot_seguro.ps1`. Rendering goes through ps3recomp's `rsx_live_draw` Direct3D 12 engine. Measured facts: ~68k PPU functions, 192 indirect dispatchers from two bytecode interpreters whose table base is built with `lis`+`addic`, a 1.75 GiB disk cache sized through `cellFsAllocateFileAreaWithoutZeroFill`, 280+ live semaphores, EDGE jobs that call SPURS from inside the job, a FIFO whose 8 KB segments end in a junk word after the `JUMP`, and NV0039 memory-to-memory copies on subchannel 1 that the audio path depends on.
+The game's decrypted ELF (produced by the user) goes through ps3recomp's `ppu_loader.py`, `scripts/prep_lift.py` and the v0.18.0 `ppu_lifter.py` with this repo's jump-table patch, giving 66 lifted C++ translation units. The 18 SPU programs embedded in the ELF are found and lifted at configure time (`PORT_SPU_INPUTS`); the 27 SPURS jobs and 3 Multistream DSP plugins that the game loads from its data files are captured at runtime (`SPU_DUMP_MISS`, `SPU_DUMP_OVL`) and lifted by `analysis/tools/lift_jobs.py` and `lift_dsp.py`; the Multistream's MP3 decoder is lifted from your own firmware's `flashMP3.pic` by `lift_mp3.py`. The toolkit is ps3recomp v0.19.0 plus 12 open upstream PRs (`prepare_toolkit.ps1`), and seventeen of its files are patched into `local/overlay`, and `port/` links everything into `MyGameRecomp.exe`, which is only ever started by `scripts/boot_seguro.ps1`. Rendering goes through ps3recomp's `rsx_live_draw` Direct3D 12 engine. Measured facts: ~68k PPU functions, 192 indirect dispatchers from two bytecode interpreters whose table base is built with `lis`+`addic`, a 1.75 GiB disk cache sized through `cellFsAllocateFileAreaWithoutZeroFill`, 280+ live semaphores, EDGE jobs that call SPURS from inside the job, a FIFO whose 8 KB segments end in a junk word after the `JUMP`, and NV0039 memory-to-memory copies on subchannel 1 that the audio path depends on.

@@ -82,6 +82,10 @@ def confere(s):
     item(os.path.isfile(os.path.join(c["overlay"], "cellSpurs.c")), "overlay do toolkit (scripts/prepare_overlay.ps1)")
     mp3 = os.path.join(c["dev_flash"], "sys", "external", "flashMP3.pic")
     r.append((True, ("ok" if os.path.isfile(mp3) else "ausente (opcional, sem ele o MP3 nao decodifica)") + ": " + mp3))
+    # O MP3 traduzido (analysis/tools/lift_mp3.py) entra no executavel; sem ele a musica nao sai.
+    reg = os.path.join(s["local"], "spu_mp3", "mp3_register.c")
+    r.append((True, ("ok" if os.path.isfile(reg) else
+                     "ausente (opcional, sem ele a musica nao sai; analysis/tools/lift_mp3.py e recompile)") + ": " + reg))
     item(os.path.isfile(BOOT), "scripts/boot_seguro.ps1")
     return r
 

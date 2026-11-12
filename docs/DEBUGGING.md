@@ -35,7 +35,11 @@ Um boot de 330 s com o `PAD_SCRIPT` do BUILDING deve ter: `[STARTUP] Time to Pre
 | `PS3_SAMPLE=<ms>` | toolkit | amostrador de pilhas do PPU |
 | `PS3_SCTRACE=fail` | toolkit | registra syscalls que falham |
 | `PS3_FSLOG` | toolkit | registra o acesso a arquivos |
-| `GCM_SUBCH1_M2MF=1` | experimento | executa as cópias NV0039 do subcanal 1 (`analysis/experiments/gera_m2mf.py`) |
+| `GCM_SUBCH1_M2MF=1` | patch | executa as cópias NV0039 do subcanal 1 (sem elas, o áudio do stream não fica pronto) |
+| `PPU_PRIO_ABOVE=<n>` | patch | threads do guest com prioridade menor que `n` em `ABOVE_NORMAL` (2040 põe o Multistream) |
+| `USLEEP_CAP=0` | patch | desliga o limite da espera do `usleep` (o timer de alta resolução às vezes não dispara) |
+| `PS3_ECOQOS=1` | port (`main.cpp`) | mantém o processo no EcoQoS do Windows 11 (o padrão é sair dele) |
+| `PS3_FTRACE`, `PS3_FTRACE_CAP`, `PS3_FTRACE_MIN_US` | toolkit | linha do tempo de eventos (`tools/ftrace_report.py` do toolkit) |
 | `SPU_AUDIT_IMG`, `SPU_AUDIT_TRACE`, `SPU_AUDIT_WATCH`, `SPU_AUDIT_SUM`, `SPU_AUDIT_HEX` | experimento | sonda de DMA do SPU (`analysis/experiments/audit.c`) |
 | `PPU_WWATCH_STACKFN=<func>` | experimento | pilha só quando a escrita vigiada vem dessa função (`gera_ww.py`) |
 

@@ -18,15 +18,16 @@ Tudo que vem do jogo fica em `local\`, que o git ignora. Os scripts leem os cami
 | Caminho | Variável | Conteúdo |
 | :--- | :--- | :--- |
 | `local\` | `RDR_ROOT` | raiz local |
-| `local\ps3recomp\` | `PS3RECOMP_DIR` | clone do ps3recomp na tag `v0.19.0` (`ae92407`) |
+| `local\ps3recomp\` | `PS3RECOMP_SRC` | clone do ps3recomp com a tag `v0.19.0` (`ae92407`); só é lido |
+| `local\ps3recomp-rdr\` | `PS3RECOMP_DIR` | a v0.19.0 com os 12 PRs de `patches\ps3recomp-v0.19.0-upstream-prs.patch` (`prepare_toolkit.ps1`) |
 | `local\ps3recomp-v0.18.0\` | — | clone na tag `v0.18.0` (`4e8f3ca`), só para o lifter |
 | `local\game\RDR2.elf` | `RDR_ELF` | executável do jogo **já decriptado por você** |
 | `local\lift_in\` | — | listas de funções e imports do `ppu_loader.py` |
 | `local\lifted\` | `RDR_LIFTED` | saída do `ppu_lifter.py` |
 | `local\overlay\` | `RDR_OVERLAY` | arquivos do toolkit com o patch (`prepare_overlay.ps1`) |
-| `local\spu_jobs\`, `local\spu_dsp\` | — | jobs SPU e plugins DSP traduzidos (opcionais) |
+| `local\spu_jobs\`, `local\spu_dsp\`, `local\spu_mp3\` | — | jobs SPU, plugins DSP e o decodificador MP3 traduzidos (opcionais, mas a música depende do MP3) |
 | `local\vfs\` | `RDR_VFS` | árvore do jogo: `PS3_GAME\PARAM.SFO`, `PS3_GAME\USRDIR\…`, `game\BLUS30418\USRDIR\…` |
-| `local\dev_flash\` | `RDR_DEV_FLASH` | opcional: `sys\external\flashMP3.pic` do seu firmware (decodificador MP3) |
+| `local\dev_flash\` | `RDR_DEV_FLASH` | `sys\external\flashMP3.pic` do seu firmware (decodificador MP3; sem ele não há música) |
 | `local\build\`, `local\boots\` | `RDR_BUILD`, `RDR_BOOTS` | build e saídas dos boots |
 
 Os arquivos de dados precisam estar em forma aberta (os `.rpf`, `rdr2_ult.sdat` e os pacotes de DLC em `dlcPack\`). Este repositório não explica nem automatiza a extração ou a decriptação.
@@ -41,7 +42,10 @@ git -C local\ps3recomp checkout v0.19.0
 git clone https://github.com/sp00nznet/ps3recomp local\ps3recomp-v0.18.0
 git -C local\ps3recomp-v0.18.0 checkout v0.18.0
 git -C local\ps3recomp-v0.18.0 apply ..\..\patches\ps3recomp-v0.18.0-ppu_lifter.patch
+scripts\prepare_toolkit.ps1
 ```
+
+`prepare_toolkit.ps1` exporta a v0.19.0 do clone e aplica `patches\ps3recomp-v0.19.0-upstream-prs.patch` (12 PRs abertos do ps3recomp; lista em [patches/README.md](../patches/README.md)) em `local\ps3recomp-rdr`, que é o toolkit do build. O clone não muda.
 
 O patch do lifter faz o `discover_jump_tables` reconhecer a base constante (`lis` + `addic`) dos dois interpretadores de bytecode do jogo e preferir o `lwzx` que alimenta o `mtctr`: sem ele, 180 de 192 despachos ficam sem resolução. O lift testado foi feito com o lifter da v0.18.0; o da v0.19.0 não foi testado com este patch.
 
@@ -72,7 +76,7 @@ scripts\prepare_overlay.ps1
 scripts\build.ps1 -Jobs 4
 ```
 
-`prepare_overlay.ps1` extrai 15 arquivos da v0.19.0 e aplica `patches\ps3recomp-v0.19.0-rdr.patch` neles, sem mexer no clone. `build.ps1` configura com `PORT_SPU_INPUTS=RDR2.elf`, que faz o toolkit achar e traduzir os programas SPU embutidos no ELF (em `local\build\generated_spu\`), e compila. A primeira compilação leva cerca de 15–20 min.
+`prepare_overlay.ps1` copia 17 arquivos de `local\ps3recomp-rdr` e aplica `patches\ps3recomp-v0.19.0-rdr.patch` neles, sem mexer no toolkit. `build.ps1` configura com `PORT_SPU_INPUTS=RDR2.elf`, que faz o toolkit achar e traduzir os programas SPU embutidos no ELF (em `local\build\generated_spu\`), e compila. A primeira compilação leva cerca de 15–20 min.
 
 ## 4. Boot
 
@@ -85,7 +89,7 @@ Sempre por `boot_seguro.ps1`: ele limita núcleos, memória, threads e tempo, gr
 
 O `PAD_SCRIPT` acima aperta START, X, X, □ e X e chega à cena 3D por volta de 130 s. Os logs ficam em `local\boots\<tag>.err`/`.out`/`.mon`.
 
-Padrões que o `boot_seguro.ps1` liga (variáveis do ps3recomp ou do patch): `RSX_LIVE_DRAW=1`, `PS3_VERBOSE=0`, `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `PS3_DEV_FLASH` (se existir).
+Padrões que o `boot_seguro.ps1` liga (variáveis do ps3recomp ou do patch): `RSX_LIVE_DRAW=1`, `PS3_VERBOSE=0`, `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `GCM_SUBCH1_M2MF=1`, `PPU_PRIO_ABOVE=2040`, `PS3_DEV_FLASH` (se existir).
 
 ## 5. Jobs SPU carregados dos dados (opcional)
 
@@ -95,7 +99,16 @@ Parte dos jobs SPU vem dos arquivos de dados, não do ELF. Sem tradução eles r
 2. `python analysis\tools\lift_jobs.py <pasta> local\spu_jobs` e `python analysis\tools\lift_dsp.py <pasta> local\spu_dsp` (com `RDR_ELF` e `PS3RECOMP_TOOLS=local\ps3recomp-v0.18.0\tools`).
 3. Reconfigure (`cmake` relê `local\spu_jobs` e `local\spu_dsp`) e compile.
 
-Os dumps e as traduções são código do jogo: ficam em `local\`.
+O decodificador MP3 do Multistream vem do `flashMP3.pic` do seu firmware, não do jogo. Interpretado, cada passada do mixer leva ~170 ms e a música não sai. Traduza-o uma vez:
+
+```powershell
+$env:PS3RECOMP_TOOLS = 'local\ps3recomp-v0.18.0\tools'
+python analysis\tools\lift_mp3.py local\dev_flash\sys\external\flashMP3.pic local\spu_mp3
+```
+
+e reconfigure. O resultado é código de firmware traduzido: fica em `local\`.
+
+Os dumps e as traduções são código do jogo ou do firmware: ficam em `local\`.
 
 ---
 
@@ -104,8 +117,9 @@ Os dumps e as traduções são código do jogo: ficam em `local\`.
 Windows x64 only (the `rsx_live_draw` Direct3D 12 engine). Needs your own copy of the game, git, CMake ≥ 3.20, Ninja, Python 3.12 and llvm-mingw UCRT (tested `20261020`).
 
 1. Put everything derived from the game under `local\` (git-ignored; see the table above): the decrypted `RDR2.elf` you produced yourself, the plain data tree under `local\vfs`, optionally `flashMP3.pic` from your own firmware. This repository does not explain or automate extraction or decryption.
-2. Clone ps3recomp at `v0.19.0` into `local\ps3recomp`, and at `v0.18.0` into `local\ps3recomp-v0.18.0` with `patches\ps3recomp-v0.18.0-ppu_lifter.patch` applied (jump-table discovery for the game's two bytecode interpreters).
+2. Clone ps3recomp at `v0.19.0` into `local\ps3recomp`, and at `v0.18.0` into `local\ps3recomp-v0.18.0` with `patches\ps3recomp-v0.18.0-ppu_lifter.patch` applied (jump-table discovery for the game's two bytecode interpreters). Run `scripts\prepare_toolkit.ps1`: it exports v0.19.0 and applies the 12 upstream PRs (`patches\ps3recomp-v0.19.0-upstream-prs.patch`) into `local\ps3recomp-rdr`, the toolkit the build uses.
 3. Run `ppu_loader.py`, `scripts\prep_lift.py` (clamps the last function out of `.rodata`) and `ppu_lifter.py` with the arguments shown above. Optionally `scripts\gera_voz.py` for the `[t54]` voice-list probe.
-4. `scripts\prepare_overlay.ps1` (applies `patches\ps3recomp-v0.19.0-rdr.patch` to copies of 15 toolkit files in `local\overlay`), then `scripts\build.ps1`.
+4. `scripts\prepare_overlay.ps1` (applies `patches\ps3recomp-v0.19.0-rdr.patch` to copies of 17 toolkit files in `local\overlay`), then `scripts\build.ps1`.
 5. Boot only through `scripts\boot_seguro.ps1` (resource limits, on-disk monitor, independent watchdog); an unguarded run once froze the host. With the `PAD_SCRIPT` shown above the game reaches the 3D cutscene after about 130 s.
 6. Optional: capture runtime-loaded SPU jobs with `SPU_DUMP_MISS`, lift them with `analysis\tools\lift_jobs.py`/`lift_dsp.py` into `local\spu_jobs`/`local\spu_dsp`, reconfigure and rebuild.
+7. For music, lift the Multistream's MP3 decoder from your own firmware: `python analysis\tools\lift_mp3.py local\dev_flash\sys\external\flashMP3.pic local\spu_mp3` (with `PS3RECOMP_TOOLS=local\ps3recomp-v0.18.0\tools`), then reconfigure. Interpreted, each mixer pass takes ~170 ms and the music never plays. The output is translated firmware code and stays in `local\`.

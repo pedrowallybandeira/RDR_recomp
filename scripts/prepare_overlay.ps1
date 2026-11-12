@@ -1,22 +1,23 @@
-# Monta local\overlay: copia do ps3recomp v0.19.0 (ae92407) os arquivos que o
-# port substitui e aplica patches\ps3recomp-v0.19.0-rdr.patch sobre eles.
-# Nao altera o checkout do ps3recomp.
+# Monta local\overlay: copia do toolkit com os PRs (local\ps3recomp-rdr, feito por
+# scripts\prepare_toolkit.ps1) os arquivos que o port substitui e aplica
+# patches\ps3recomp-v0.19.0-rdr.patch sobre eles. Nao altera o toolkit.
 #
-# Builds local\overlay: takes the files the port replaces from ps3recomp v0.19.0
-# (ae92407), applies patches\ps3recomp-v0.19.0-rdr.patch to them, and leaves the
-# toolkit checkout untouched.
+# Builds local\overlay: takes the files the port replaces from the toolkit with the
+# upstream PRs (local\ps3recomp-rdr, made by scripts\prepare_toolkit.ps1), applies
+# patches\ps3recomp-v0.19.0-rdr.patch to them, and leaves the toolkit untouched.
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\config.ps1"
 
-$Base  = 'ae92407'
 $Patch = "$RdrRepo\patches\ps3recomp-v0.19.0-rdr.patch"
+$Prs   = "$RdrRepo\patches\ps3recomp-v0.19.0-upstream-prs.patch"
 # nome no overlay = caminho no toolkit
 $Map = [ordered]@{
     'cellAvconfExt.c'       = 'libs/misc/cellAvconfExt.c'
     'cellFiber.c'           = 'libs/spurs/cellFiber.c'
     'cellGcmSys.c'          = 'libs/video/cellGcmSys.c'
     'cellSpurs.c'           = 'libs/spurs/cellSpurs.c'
+    'cellSysutil.c'         = 'libs/system/cellSysutil.c'
     'ppu_fs.cpp'            = 'runtime/ppu/ppu_fs.cpp'
     'ppu_sysprx.cpp'        = 'runtime/ppu/ppu_sysprx.cpp'
     'rsx_fp_decompiler.c'   = 'libs/video/rsx_fp_decompiler.c'
@@ -24,17 +25,20 @@ $Map = [ordered]@{
     'spu_channels.c'        = 'runtime/spu/spu_channels.c'
     'spu_drain.c'           = 'runtime/spu/spu_drain.c'
     'spurs_job.c'           = 'runtime/spu/spurs_job.c'
+    'sys_ppu_thread.c'      = 'runtime/syscalls/sys_ppu_thread.c'
     'sys_semaphore.c'       = 'runtime/syscalls/sys_semaphore.c'
     'sys_semaphore.h'       = 'runtime/syscalls/sys_semaphore.h'
     'sys_timer.c'           = 'runtime/syscalls/sys_timer.c'
     'spu_inc/spu_context.h' = 'runtime/spu/spu_context.h'
 }
 
-if (-not (Test-Path "$Ps3RecompDir\.git")) { throw "PS3RECOMP_DIR ($Ps3RecompDir) nao e um clone git do ps3recomp" }
-& git -C $Ps3RecompDir cat-file -e "$Base^{commit}" 2>$null
-if ($LASTEXITCODE) { throw "o clone em $Ps3RecompDir nao tem o commit $Base (v0.19.0); rode git fetch --tags" }
-$head = (& git -C $Ps3RecompDir rev-parse --short=7 HEAD).Trim()
-if ($head -ne $Base) { Write-Warning "HEAD de $Ps3RecompDir e $head, nao ${Base}: o build vai misturar versoes do toolkit" }
+# O patch do RDR e relativo ao toolkit com os PRs: confere que e esse o toolkit.
+# The RDR patch is relative to the toolkit with the PRs: check that this is it.
+$marca = "$Ps3RecompDir\.rdr-upstream-prs"
+if (-not (Test-Path $marca)) { throw "$Ps3RecompDir nao foi montado por scripts\prepare_toolkit.ps1 (rode-o antes)" }
+if ((Get-Content $marca -Raw).Trim() -ne (Get-FileHash $Prs -Algorithm SHA256).Hash) {
+    throw "$Ps3RecompDir foi montado com outro patch de PRs; rode scripts\prepare_toolkit.ps1 -Force"
+}
 
 if (Test-Path $RdrOverlay) {
     if (-not $Force) { throw "$RdrOverlay ja existe; use -Force para refazer (ppu_recomp_023.cpp, se houver, e preservado)" }
@@ -44,13 +48,11 @@ if (Test-Path $RdrOverlay) {
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("rdr_overlay_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $tmp | Out-Null
 try {
-    # git archive grava os arquivos byte a byte (LF, sem conversao); um pipe do
-    # PowerShell recodificaria o texto.
-    & git -C $Ps3RecompDir -c core.autocrlf=false archive --format=tar -o "$tmp\base.tar" $Base -- @($Map.Values)
-    if ($LASTEXITCODE) { throw "git archive falhou" }
-    & tar -xf "$tmp\base.tar" -C $tmp
-    if ($LASTEXITCODE) { throw "tar falhou" }
-    Remove-Item "$tmp\base.tar"
+    foreach ($p in $Map.Values) {
+        $dst = Join-Path $tmp $p
+        New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+        Copy-Item (Join-Path $Ps3RecompDir $p) $dst
+    }
     Push-Location $tmp
     try {
         & git -c core.autocrlf=false apply --whitespace=nowarn $Patch

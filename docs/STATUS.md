@@ -1,28 +1,30 @@
 # Estado do port / Status
 
-*Resumo do diário de tentativas do autor (67 tentativas, outubro–novembro de 2026). English summary at the end.*
+*Resumo do diário de tentativas do autor (83 tentativas, outubro–novembro de 2026). English summary at the end.*
 
-## Onde está (2026-11-08)
+## Onde está (2026-11-12)
 
-Build adotado: ps3recomp v0.19.0 + `patches/ps3recomp-v0.19.0-rdr.patch` (inclui os PRs abertos sp00nznet/ps3recomp#701, sp00nznet/ps3recomp#665 e sp00nznet/ps3recomp#662), lift feito com o lifter da v0.18.0 + `patches/ps3recomp-v0.18.0-ppu_lifter.patch`.
+Build adotado: ps3recomp v0.19.0 + 12 PRs abertos do toolkit (`patches/ps3recomp-v0.19.0-upstream-prs.patch`) + `patches/ps3recomp-v0.19.0-rdr.patch` (que já inclui os PRs sp00nznet/ps3recomp#701, sp00nznet/ps3recomp#665 e sp00nznet/ps3recomp#662). Lift feito com o lifter da v0.18.0 + `patches/ps3recomp-v0.18.0-ppu_lifter.patch`.
 
-Boot de regressão (330 s, `boot_seguro.ps1`, `PAD_SCRIPT` até a cena):
+Boot de regressão (200 s, `boot_seguro.ps1`, `PAD_SCRIPT` até a cena):
 
 | Medida | Valor |
 | :--- | :--- |
-| `Press Start` | ~15,4 s |
-| Menus | 7–10 FPS (média 6,9 nesse boot; faixa histórica 4,7–16) |
-| Primeira cena 3D | a partir de ~130–150 s, estável a **5,6–6,6 FPS** até o fim |
+| Telas iniciais | ~58 FPS |
+| Tela título | 5,3–6,8 FPS |
+| Primeira cena 3D | a partir de ~115–120 s, **3,5–10 FPS** (a maior parte entre 4 e 6) |
+| Áudio | contínuo: abertura (vídeos Bink), tela título e cena; 0–1% de blocos mudos fora das transições |
 | Jobs SPU sem tradução (`dispatch MISS`) | 0 |
-| Ressincronizações do FIFO | 0 |
 | Memória privada (pico) | ~2,2 GB |
+
+**Áudio funcionando** desde a tentativa 79: música, ambiente (cigarras, pássaros, vento) e os vídeos da abertura. Foram sete correções independentes (ver a linha do tempo, tentativas 67–78).
 
 O que não funciona:
 
-- **Áudio quase mudo.** O Multistream decodifica o MP3 da tela título, mas a mixagem nunca lê esses buffers (slots 0 e 1). Em builds experimentais que executam as cópias NV0039 (memória a memória do RSX, subcanal 1; `GCM_SUBCH1_M2MF=1`, `analysis/experiments/gera_m2mf.py`) sai som cedo, mas muito baixo e esparso: vozes de ambiente com ganhos de −70 a −130 dB, calculados pelo próprio jogo (`audVoicePsn`, `func_00623300`). Ainda não se sabe se esses ganhos são legítimos (sons distantes) nem por que a música fica fora da mixagem.
-- **Cena:** nos builds experimentais mais recentes a abertura troca de plano (barco ao longe, depois o cais com a multidão); antes, a câmera ficava parada num plano só. Há cintilação, elementos que somem e, às vezes, uma faixa preta.
-- **Desempenho:** ~6 FPS na cena. O gargalo principal são as job chains da SPURS e o código SPU que ainda roda no interpretador (job `297D`).
-- **Estabilidade:** o PC hospedeiro congelou em dois boots longos (sem tela azul, só reset). Daí o `boot_seguro.ps1` com vigia independente. Há uma parada intermitente por volta de 23 s com o `cache.dat` já criado, que não se reproduziu em 6 boots seguidos.
+- **Desempenho:** ~6 FPS na tela título e 4–6 na cena; o jogo é limitado pela CPU. Num experimento com o sp00nznet/ps3recomp#632 (`SPU_FLOAT_RZ=1`: float do SPU nativo e exato em x86), a tela título foi a **29–44 FPS** numa rodada; a cena não mudou, e o jogo travou na cena aos 175 s. Ainda não entrou no build.
+- **Imagem:** a cena é desenhada com defeitos (cintilação, elementos que somem, trechos escuros).
+- **Backend Vulkan:** testado no Windows (tentativa 82, com o sp00nznet/ps3recomp#746). Desenha as telas 2D e a tela título, mas o 3D sai em polígonos chapados e o jogo cai para ~1,5 FPS na tela título. O motor `rsx_live_draw` com Direct3D 12 continua sendo o renderer.
+- **Estabilidade:** o PC hospedeiro já congelou em boots longos; por isso o jogo só roda por `boot_seguro.ps1`, com vigia independente. A passagem da abertura para a tela título às vezes para por alguns segundos.
 - **Entrada:** só XInput; um gamepad USB genérico não aparece, e o teclado só funciona com a porta 0 vazia.
 
 ## Linha do tempo
@@ -46,30 +48,40 @@ O que não funciona:
 | 61 | `cache.dat` (1,75 GB) sobrevive entre boots | `cellFsAllocateFileAreaWithoutZeroFill` de verdade (sp00nznet/ps3recomp#714); saída estéreo (`PS3_AUDIO_OUT_CH`) |
 | 62 | áudio decodificado existe, mixagem lê zeros | diagnóstico |
 | 63–66 | base migrada para a ps3recomp v0.19.0; cena desenhada mais correta | merge das mudanças; PRs abertos de render |
-| 67 | primeiro som (fraco) e câmera trocando de plano, em builds experimentais | NV0039 no subcanal 1 (experimento, fora do build adotado) |
+| 67 | **primeiro som** e câmera trocando de plano | cópias NV0039 (memória a memória do RSX, subcanal 1; `GCM_SUBCH1_M2MF=1`): a bandeira de pronto da voz de stream vem por elas |
+| 68–69 | som picotado separado em dois defeitos do runtime | linha do tempo com `PS3_FTRACE`: o mixer do Multistream entregava 6,8 de 187,5 blocos/s |
+| 70 | passada do mixer de ~170 ms para ~7 ms | decodificador MP3 (`flashMP3.pic`, carregado em LS `0x1A100`) traduzido em vez de interpretado (`analysis/tools/lift_mp3.py`; o resultado fica local) |
+| 72 | `usleep(800)` do Multistream de 228 ms para ~1 ms | `PPU_PRIO_ABOVE=2040`: threads do guest com prioridade alta em `ABOVE_NORMAL` |
+| 73 | buracos no som somem | o processo sai do EcoQoS do Windows 11 (`SetProcessInformation`) |
+| 75–76 | som que sumia depois de alguns segundos | o timer de alta resolução do Windows às vezes não dispara (sono de até 17 s): espera do `usleep` limitada |
+| 77 | sem buracos com a música da tela título tocando | float nativo (no máximo 1 ulp) só nas unidades de áudio (`port/src/audio_float`) |
+| 78 | **som dos vídeos da abertura** | `cellSysutilGetBgmPlaybackStatus` com os valores do PS3: o toolkit dizia ao jogo que havia música do XMB tocando, e o jogo mutava os vídeos Bink |
+| 79 | **áudio completo** no build adotado | as correções 67–78, sem sondas |
+| 81 | 12 PRs abertos do ps3recomp na base | Vulkan no Windows (#746, #754, #702, #736, #738) e estabilidade (#764, #713, #759, #758, #760, #761, #601) |
+| 82 | primeiro boot com Vulkan | telas 2D e tela título; 3D chapado, ~1,5 FPS |
+| 83 | tela título a 29–44 FPS (experimento, uma rodada) | sp00nznet/ps3recomp#632 com `SPU_FLOAT_RZ=1` |
 
 ## Próximos passos
 
-1. Áudio: por que o mixer SPU não lê os slots 0 e 1 (música) e se os ganhos pequenos das vozes são legítimos; transformar o NV0039 em correção genérica para o toolkit.
-2. Testar o backend Vulkan que já vem na ps3recomp v0.19.0, com o vigia, para ver se a cena desenha e se o sistema fica estável.
-3. Lifter: despachos `BRANCH-TO-N unresolved` restantes.
-4. Desempenho: guard e kernel da SPURS acordados por evento, prioridade da cadeia de som, menos código SPU interpretado.
-5. Mandar ao ps3recomp as demais correções genéricas do patch (uma por PR, com teste).
+1. Desempenho: confirmar o #632 (rodadas de controle, travamento na cena) e testar os outros PRs de desempenho do toolkit um por vez.
+2. Imagem: os defeitos da cena no `rsx_live_draw`.
+3. Mandar ao ps3recomp as correções genéricas de áudio: estado do BGM do `cellSysutil`, saída do EcoQoS, espera limitada do `usleep` (junto do sp00nznet/ps3recomp#628) e `PPU_PRIO_ABOVE`.
+4. Lifter: despachos `BRANCH-TO-N unresolved` restantes.
 
 ## Pendências conhecidas
 
 - `cellSpursTaskGenerateLsPattern`, `cellSpursTaskGetLoadableSegmentPattern` e `cellSpursEnableExceptionEventHandler` sem handler.
 - Faltam testes unitários para `LWM_FREE`, argumentos do taskset, `ReadWithOffset`/`WriteWithOffset` e o limite de semáforos.
-- O patch da v0.19.0 inclui ajustes específicos deste jogo (o salto da "segment tail word" no FIFO em `cellGcmSys.c`, as pontes `rdr2_spu_*` em `cellSpurs.c`) que não devem ir para o toolkit como estão.
+- O patch do RDR inclui ajustes específicos deste jogo (o salto da "segment tail word" no FIFO em `cellGcmSys.c`, as pontes `rdr2_spu_*` em `cellSpurs.c`) que não devem ir para o toolkit como estão.
 
 ---
 
 ## English summary
 
-**Where it is (2026-11-08):** ps3recomp v0.19.0 plus this repository's patch (which folds in open PRs sp00nznet/ps3recomp#701, sp00nznet/ps3recomp#665 and sp00nznet/ps3recomp#662), lift made with the v0.18.0 lifter plus the jump-table patch. A 330 s regression boot reaches `Press Start` at ~15 s, menus at 7–10 FPS, and the **first 3D cutscene** after ~130–150 s, stable at **5.6–6.6 FPS**, with zero untranslated SPU jobs and zero FIFO resyncs, ~2.2 GB peak private memory.
+**Where it is (2026-11-12):** ps3recomp v0.19.0 plus 12 open upstream PRs (Vulkan on Windows and stability fixes) plus this repository's patch, lifted with the v0.18.0 lifter plus the jump-table patch. A 200 s regression boot runs the intro screens at ~58 FPS, the title screen at 5.3–6.8 FPS, and reaches the **first 3D cutscene** after ~115–120 s at 3.5–10 FPS (mostly 4–6), with zero untranslated SPU jobs and ~2.2 GB peak private memory.
 
-**Not working yet:** audio is nearly silent — the title-screen MP3 is decoded but the SPU mixer never reads those buffers; experimental builds that execute the RSX NV0039 memory-to-memory copies on subchannel 1 produce a faint, sparse ambient sound (voice gains of −70 to −130 dB computed by the game itself). In the latest experimental builds the opening cutscene now changes shots (distant boat, then the crowded dock) instead of sitting on one shot; the picture still flickers and loses elements. Performance is bounded by SPURS job chains and interpreted SPU code. The host PC froze twice on long boots, hence the guarded boot script; an intermittent stall around 23 s with an existing cache did not reproduce in 6 runs. Input is XInput only.
+**Audio works** (attempt 79): music, ambience and the intro Bink videos. It took seven independent fixes: executing the RSX NV0039 memory-to-memory copies on subchannel 1; lifting the Multistream's runtime-loaded MP3 decoder (`flashMP3.pic`, from your own firmware; the output stays local); raising high-priority guest threads to `ABOVE_NORMAL`; leaving Windows 11 EcoQoS and bounding the `usleep` wait (the high-resolution timer sometimes never fires); native float in the audio units only; and reporting the XMB BGM playback status with the PS3's values (the toolkit told the game user music was playing, so it muted the videos).
 
-**Milestones:** lifter jump tables (attempts 1–2) → first link and boot (3–9) → game data and file I/O (10–20) → first image via `rsx_live_draw` (21–22) → title screen (39) → no more freeze at 20 s (45) → menus and loading screen (46–52) → first 3D scene (54) → stable ~6 FPS through parallel job chains and per-thread job context (55–60) → persistent game cache (61) → migration to ps3recomp v0.19.0 (63–66) → first sound and camera cuts in experiments (67).
+**Not working yet:** performance is CPU-bound (~6 FPS at the title, 4–6 in the scene). An experiment with sp00nznet/ps3recomp#632 (`SPU_FLOAT_RZ=1`) ran the title screen at 29–44 FPS in one run, but the scene did not change and the game hung there at 175 s; it is not in the build yet. The scene still renders with defects. The Vulkan backend (via #746) draws the 2D screens and the title screen on Windows, but 3D comes out as flat polygons at ~1.5 FPS, so `rsx_live_draw` on Direct3D 12 stays the renderer. The host PC has frozen on long boots, so only run the game through the guarded boot script. Input is XInput only.
 
-**Next:** audio routing in the mixer, try the Vulkan backend, remaining unresolved lifter branches, SPURS wake-ups and less interpreted SPU code, and upstreaming the generic fixes one PR at a time.
+**Next:** confirm #632 and try the other upstream performance PRs one at a time, fix the scene's rendering defects, and upstream the generic audio fixes.

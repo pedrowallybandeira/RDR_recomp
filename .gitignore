@@ -69,6 +69,7 @@ generated_spu/
 generated_spu*/
 spu_jobs/
 spu_dsp/
+spu_mp3/
 spu_recomp.c
 spujob_*/
 spu_[0-9a-f]*/
@@ -76,6 +77,7 @@ image.elf
 code.bin
 jobs_register.c
 dsp_register.c
+mp3_register.c
 inventory.json
 
 # --- Saidas de execucao / run output ---------------------------------------

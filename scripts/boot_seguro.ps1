@@ -42,6 +42,11 @@ if (-not $env:SPU_INTERP_UNLIFTED) { $env:SPU_INTERP_UNLIFTED = '1' }
 if (-not $env:GCM_PARK_GRACE_MS) { $env:GCM_PARK_GRACE_MS = '2000' }
 if (-not $env:PS3_DEV_FLASH -and (Test-Path $RdrDevFlash)) { $env:PS3_DEV_FLASH = $RdrDevFlash }
 if (-not $env:PS3_AUDIO_OUT_CH) { $env:PS3_AUDIO_OUT_CH = '2' }
+# Audio: copias NV0039 do RSX (a bandeira de pronto da voz de stream vem por elas) e a
+# thread do Multistream (prioridade 2033) em ABOVE_NORMAL, para o usleep(800) dela acordar
+# a tempo. / Audio: RSX NV0039 copies, and the Multistream thread in ABOVE_NORMAL.
+if (-not $env:GCM_SUBCH1_M2MF) { $env:GCM_SUBCH1_M2MF = '1' }
+if (-not $env:PPU_PRIO_ABOVE) { $env:PPU_PRIO_ABOVE = '2040' }
 if (-not (Test-Path $exe)) { throw "executavel nao encontrado: $exe" }
 if (-not (Test-Path $elf)) { throw "ELF nao encontrado: $elf (defina RDR_ELF)" }
 

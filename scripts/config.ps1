@@ -11,8 +11,12 @@
 $RdrRepo  = (Resolve-Path "$PSScriptRoot\..").Path
 $RdrLocal = if ($env:RDR_ROOT) { $env:RDR_ROOT } else { "$RdrRepo\local" }
 
-# ps3recomp v0.19.0 limpo (tag v0.19.0, commit ae92407). So e lido.
-$Ps3RecompDir = if ($env:PS3RECOMP_DIR) { $env:PS3RECOMP_DIR } else { "$RdrLocal\ps3recomp" }
+# Clone limpo do ps3recomp com a tag v0.19.0 (commit ae92407). So e lido.
+# Clean ps3recomp clone with tag v0.19.0 (commit ae92407). Read only.
+$Ps3RecompSrc = if ($env:PS3RECOMP_SRC) { $env:PS3RECOMP_SRC } else { "$RdrLocal\ps3recomp" }
+# Toolkit usado no build: a v0.19.0 com os 12 PRs de patches\ps3recomp-v0.19.0-upstream-prs.patch
+# (scripts\prepare_toolkit.ps1). / Toolkit the build uses: v0.19.0 plus the 12 upstream PRs.
+$Ps3RecompDir = if ($env:PS3RECOMP_DIR) { $env:PS3RECOMP_DIR } else { "$RdrLocal\ps3recomp-rdr" }
 # ELF decriptado pelo proprio usuario, a partir da copia dele do jogo.
 $RdrElf       = if ($env:RDR_ELF)       { $env:RDR_ELF }       else { "$RdrLocal\game\RDR2.elf" }
 # Saida do ppu_lifter.py (ppu_recomp.h e ppu_recomp_NNN.cpp).

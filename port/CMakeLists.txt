@@ -117,8 +117,10 @@ get_target_property(PORT_RUNTIME_SOURCES ps3recomp_runtime SOURCES)
 # spu_channels/spu_drain: runtime-loaded SPU code runs as a call (analysis/history/gera.py).
 # rsx_live_draw: MAX_SURFACES 512. sys_timer: PS3_USLEEP_WAIT_US (upstream #628).
 # cellAvconfExt: PS3_AUDIO_OUT_CH=<2|6|8> (analysis/history/gera_v14a.py).
+# sys_ppu_thread: PPU_PRIO_ABOVE=<n>, guest priority < n -> THREAD_PRIORITY_ABOVE_NORMAL.
+# cellSysutil: BGM playback status in the PS3's values (PLAY = 0, STOP = 1).
 list(FILTER PORT_RUNTIME_SOURCES EXCLUDE REGEX
-     "(sys_semaphore|cellGcmSys|spurs_job|spu_channels|spu_drain|rsx_live_draw|rsx_fp_decompiler|sys_timer|cellAvconfExt)\\.c$")
+     "(sys_semaphore|cellGcmSys|spurs_job|spu_channels|spu_drain|rsx_live_draw|rsx_fp_decompiler|sys_timer|cellAvconfExt|sys_ppu_thread|cellSysutil)\\.c$")
 list(APPEND PORT_RUNTIME_SOURCES "${PORT_OVERLAY_DIR}/sys_semaphore.c"
                                  "${PORT_OVERLAY_DIR}/cellGcmSys.c"
                                  "${PORT_OVERLAY_DIR}/spurs_job.c"
@@ -127,11 +129,14 @@ list(APPEND PORT_RUNTIME_SOURCES "${PORT_OVERLAY_DIR}/sys_semaphore.c"
                                  "${PORT_OVERLAY_DIR}/rsx_live_draw.c"
                                  "${PORT_OVERLAY_DIR}/sys_timer.c"
                                  "${PORT_OVERLAY_DIR}/cellAvconfExt.c"
-                                 "${PORT_OVERLAY_DIR}/rsx_fp_decompiler.c")
+                                 "${PORT_OVERLAY_DIR}/rsx_fp_decompiler.c"
+                                 "${PORT_OVERLAY_DIR}/sys_ppu_thread.c"
+                                 "${PORT_OVERLAY_DIR}/cellSysutil.c")
 set_target_properties(ps3recomp_runtime PROPERTIES SOURCES "${PORT_RUNTIME_SOURCES}")
 target_include_directories(ps3recomp_runtime PRIVATE "${PS3RECOMP_DIR}/runtime/syscalls"
                                                      "${PS3RECOMP_DIR}/runtime/spu"
-                                                     "${PS3RECOMP_DIR}/libs/video")
+                                                     "${PS3RECOMP_DIR}/libs/video"
+                                                     "${PS3RECOMP_DIR}/libs/system")
 
 # ---------------------------------------------------------------------------
 # The HLE NID table
@@ -231,6 +236,15 @@ if(PORT_ENABLE_SPU AND PORT_SPU_INPUTS)
     else()
         message(STATUS "  (no ${PORT_LOCAL_DIR}/spu_dsp -- DSP plugins run interpreted)")
     endif()
+    # Multistream's MP3 decoder (flashMP3.pic from your firmware), loaded at LS 0x1A100
+    # and lifted by analysis/tools/lift_mp3.py into PORT_LOCAL_DIR/spu_mp3 (local only:
+    # it is translated firmware code). Interpreted, a mixer pass took ~170 ms.
+    if(EXISTS "${PORT_LOCAL_DIR}/spu_mp3/mp3_register.c")
+        file(GLOB PORT_SPU_MP3 CONFIGURE_DEPENDS "${PORT_LOCAL_DIR}/spu_mp3/*/spu_recomp.c")
+        list(APPEND SPU_SOURCES ${PORT_SPU_MP3} "${PORT_LOCAL_DIR}/spu_mp3/mp3_register.c")
+    else()
+        message(STATUS "  (no ${PORT_LOCAL_DIR}/spu_mp3 -- the MP3 decoder runs interpreted)")
+    endif()
 elseif(PORT_ENABLE_SPU)
     file(GLOB SPU_LIFTED CONFIGURE_DEPENDS "${SPU_DIR}/*/spu_recomp.c")
     if(SPU_LIFTED)
@@ -296,6 +310,17 @@ if(SPU_SOURCES)
     if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         set_source_files_properties(${SPU_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2;-mavx2;-mfma;-ffp-contract=off")
     endif()
+    # Audio code (the Multistream image, its MP3 decoder and DSP plugins) with native
+    # float for spu_fa/fs/fm/fma/fms/fnms (src/audio_float): denormals flushed,
+    # overflow saturated, at most 1 ulp from the exact SPU rounding. The exact
+    # emulation made a mixer pass take ~14 ms for 10.7 ms of sound while the
+    # title's MP3 stream played. The long name is the Multistream image's hash.
+    set(PORT_SPU_FASTFLOAT
+        "${CMAKE_CURRENT_BINARY_DIR}/generated_spu/spu_ed8663640d0259176e31478684089aed6bb7c46b6b56e871063e60153072e31b/spu_recomp.c"
+        ${PORT_SPU_MP3} ${PORT_SPU_DSP})
+    set_source_files_properties(${PORT_SPU_FASTFLOAT} PROPERTIES
+        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/audio_float;${PORT_OVERLAY_DIR}/spu_inc;${PS3RECOMP_DIR}/runtime/spu"
+        COMPILE_DEFINITIONS "SPU_USE_DISPATCH_MT;SPU_LS_PROBES=0;SPU_FAST_FLOAT")
 endif()
 
 # app.rc carries the icon, the version block and the manifest, and needs a

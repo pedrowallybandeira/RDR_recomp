@@ -16,8 +16,8 @@ jobs:
           set -eu
           forbidden=$(git ls-files | grep -Ei \
             -e '\.(iso|elf|self|sprx|prx|pkg|pup|rpf|sdat|edat|rap|sfo|pic|bin|exe|dll|obj|o|a|lib|pdb|ppm|wav|f32|dmp|err|out|mon|pilhas|vigia)$' \
-            -e '(^|/)(ppu_recomp[^/]*\.(c|cpp|h)|spu_recomp\.c|jobs_register\.c|dsp_register\.c|cache\.dat|act\.dat)$' \
-            -e '(^|/)(local|lifted|recompiled|generated_spu|spu_jobs|spu_dsp|vfs|dev_flash|boots|PS3_GAME|USRDIR|dlcPack)/' \
+            -e '(^|/)(ppu_recomp[^/]*\.(c|cpp|h)|spu_recomp\.c|jobs_register\.c|dsp_register\.c|mp3_register\.c|cache\.dat|act\.dat)$' \
+            -e '(^|/)(local|lifted|recompiled|generated_spu|spu_jobs|spu_dsp|spu_mp3|vfs|dev_flash|boots|PS3_GAME|USRDIR|dlcPack)/' \
             || true)
           if [ -n "$forbidden" ]; then
             echo "::error::Arquivos proibidos rastreados / forbidden files tracked:"

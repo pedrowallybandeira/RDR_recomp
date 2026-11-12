@@ -12,14 +12,14 @@
   "status": "in-progress",
   "targets": ["Windows"],
   "toolchain": "ps3recomp",
-  "approach": "Static recompilation of the PPU executable and of the SPU programs and SPURS jobs with ps3recomp; RSX through the live-draw Direct3D 12 engine; generic fixes sent upstream.",
+  "approach": "Static recompilation of the PPU executable and of the SPU programs and SPURS jobs with ps3recomp (v0.19.0 plus 12 open upstream PRs); RSX through the live-draw Direct3D 12 engine; generic fixes sent upstream.",
   "maintainers": [
     { "name": "Pedro Wally Bandeira", "link": "https://github.com/pedrowallybandeira" }
   ],
   "help": [
-    "Audio: Multistream mixer never reads the decoded music slots",
-    "SPURS job-chain throughput and interpreted SPU code",
-    "RSX live-draw rendering defects and the Vulkan backend"
+    "Performance: CPU-bound at ~6 FPS (SPU float emulation, SPURS job chains)",
+    "RSX live-draw rendering defects in the 3D scene",
+    "Vulkan backend: 3D renders as flat polygons on this game"
   ],
-  "notes": "Boots, goes through the menus and reaches the first 3D cutscene at about 6 FPS. Audio is nearly silent. Not playable."
+  "notes": "Boots, goes through the menus and reaches the first 3D cutscene at 4-6 FPS. Audio works (music, ambience, intro videos). Not playable."
 }

@@ -488,6 +488,17 @@ int main(int argc, char** argv)
      * inflates every shorter wait the title makes and throttles the whole
      * thing. POSIX timers are already fine-grained. */
     timeBeginPeriod(1);
+    /* Out of EcoQoS: with the window hidden or minimized, Windows 11 may throttle
+     * the process and ignore the 1 ms timer period above, and the audio thread
+     * then misses its blocks (gaps every few seconds). PS3_ECOQOS=1 keeps it. */
+    if (!getenv("PS3_ECOQOS")) {
+        typedef struct { ULONG Version, ControlMask, StateMask; } ps3_power_throttling;
+        typedef BOOL (WINAPI *set_proc_info_fn)(HANDLE, int, LPVOID, DWORD);
+        set_proc_info_fn spi = (set_proc_info_fn)(void*)GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation");
+        ps3_power_throttling pt = { 1, 0x1u | 0x4u, 0 };  /* EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION off */
+        if (spi) spi(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &pt, sizeof pt);
+    }
     setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: do not lose prints on a kill */
     { extern void ps3_sampler_start(void); ps3_sampler_start(); }   /* PS3_SAMPLE=<ms> */
 #endif
