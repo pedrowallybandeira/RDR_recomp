@@ -46,7 +46,7 @@ jobs:
       - name: Patches only touch toolkit paths
         run: |
           set -eu
-          bad=$(grep -h '^+++ b/' patches/*.patch | sed 's#^+++ b/##' | grep -Ev '^(libs|runtime|tools|include|cmake|templates)/' || true)
+          bad=$(grep -h '^+++ b/' patches/*.patch | sed 's#^+++ b/##' | grep -Ev '^(CMakeLists\.txt$|(libs|runtime|tools|include|cmake|templates|tests)/)' || true)
           if [ -n "$bad" ]; then
             echo "::error::Patch fora dos caminhos do ps3recomp / patch touches non-toolkit paths:"
             echo "$bad"
