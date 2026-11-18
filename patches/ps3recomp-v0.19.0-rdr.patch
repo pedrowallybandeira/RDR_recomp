@@ -98,7 +98,7 @@ index 3673985..ecd78e3 100644
      } else {
          f->sched = s;
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index b09220e..220e0a1 100644
+index b09220e..8ad8c68 100644
 --- a/libs/spurs/cellSpurs.c
 +++ b/libs/spurs/cellSpurs.c
 @@ -81,7 +81,7 @@ static u32           s_next_task_id = 0;
@@ -226,7 +226,7 @@ index b09220e..220e0a1 100644
  s32 _cellSpursSendSignal(void* taskset, u32 taskId)
  {
      uint32_t taskset_ea = (uint32_t)(uintptr_t)taskset;
-@@ -2571,10 +2572,17 @@ enum {
+@@ -2571,10 +2572,18 @@ enum {
  static struct {
      u32 jc_ea;        /* CellSpursJobChain EA (0 = free) */
      u32 entry_ea;     /* first command word EA */
@@ -241,10 +241,11 @@ index b09220e..220e0a1 100644
      int run_count;
      volatile long running;   /* 1 while a host thread walks this chain */
 +    volatile long kicks;     /* Run/Kick requests, so none is lost to coalescing */
++    u32 spu_mask;            /* img16: SPUs whose priority is non-zero (JC_SPU_PRIO) */
  } s_jobchains[MAX_JOBCHAINS];
  
  static void jc_dump_commands(const char* tag, u32 ea, int max_words)
-@@ -2630,6 +2638,12 @@ s32 cellSpursJobChainAttributeSetName(u64 attr_ea, u64 name_ea)
+@@ -2630,6 +2639,39 @@ s32 cellSpursJobChainAttributeSetName(u64 attr_ea, u64 name_ea)
      return CELL_OK;
  }
  
@@ -254,10 +255,37 @@ index b09220e..220e0a1 100644
 +        if (s_jobchains[i].jc_ea == jc_ea) { s_jobchains[i].max_cont = max_cont; return; }
 +}
 +
++#define JC_SPUS_PRIO_N 5   /* img16: same as JC_SPUS, defined further down */
++
++/* img16: JC_SPU_PRIO -- the priority table decides which SPUs may run the chain. */
++static int jc_prio_on(void)
++{
++    static int s_on = -1;
++    if (s_on < 0) s_on = (getenv("JC_SPU_PRIO") ? strcmp(getenv("JC_SPU_PRIO"), "0") != 0 : 1)   /* T110: on by default */;
++    return s_on;
++}
++static void jc_set_prio(u32 jc_ea, u32 prio_ea, const char* who)
++{
++    if (!prio_ea || prio_ea >= 0x10000000u) return;
++    u32 mask = 0;
++    const u8* pr = vm_base + prio_ea;
++    for (int i = 0; i < JC_SPUS_PRIO_N; i++) if (pr[i]) mask |= 1u << i;
++    fprintf(stderr, "[jc-prio] %s jc=0x%08X prio=%02X %02X %02X %02X %02X %02X %02X %02X mask=0x%02X%s\n",
++            who, jc_ea, pr[0], pr[1], pr[2], pr[3], pr[4], pr[5], pr[6], pr[7], mask,
++            jc_prio_on() ? "" : " (JC_SPU_PRIO off: ignored)");
++    for (int i = 0; i < MAX_JOBCHAINS; i++)
++        if (s_jobchains[i].jc_ea == jc_ea) { s_jobchains[i].spu_mask = mask; return; }
++}
++static u32 jc_mask_of(int slot)
++{
++    if (!jc_prio_on() || slot < 0 || slot >= MAX_JOBCHAINS) return 0;
++    return s_jobchains[slot].spu_mask;
++}
++
  /* Register (or re-register) a job chain handle. Shared by both Create forms. */
  static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
                         const char* who)
-@@ -2638,6 +2652,8 @@ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
+@@ -2638,6 +2680,8 @@ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
          if (!s_jobchains[i].jc_ea || s_jobchains[i].jc_ea == jc_ea) {
              s_jobchains[i].jc_ea     = jc_ea;
              s_jobchains[i].entry_ea  = entry_ea;
@@ -266,7 +294,7 @@ index b09220e..220e0a1 100644
              s_jobchains[i].size_desc = size_desc;
              s_jobchains[i].max_grab  = max_grab;
              s_jobchains[i].run_count = 0;
-@@ -2674,8 +2690,10 @@ s32 cellSpursCreateJobChainWithAttribute(u64 spurs_ea, u64 jc_ea, u64 attr_ea)
+@@ -2674,8 +2718,11 @@ s32 cellSpursCreateJobChainWithAttribute(u64 spurs_ea, u64 jc_ea, u64 attr_ea)
             (u32)jc_ea, entry, sd_mg >> 16, sd_mg & 0xFFFFu,
             name_ea ? (const char*)(vm_base + name_ea) : "-");
  
@@ -275,11 +303,12 @@ index b09220e..220e0a1 100644
 +    s32 rc = jc_register((u32)jc_ea, entry, (u16)(sd_mg >> 16), (u16)(sd_mg & 0xFFFFu),
 +                         "CreateJobChainWithAttribute");
 +    jc_set_max_cont((u32)jc_ea, vm_read32((u32)attr_ea + JCATTR_MAX_CONT));
++    jc_set_prio((u32)jc_ea, (u32)attr_ea + JCATTR_PRIORITY, "CreateJobChainWithAttribute");   /* img16 */
 +    return rc;
  }
  
  /* cellSpursCreateJobChain -- the no-attribute form, and the one the WWS job
-@@ -2709,8 +2727,10 @@ s32 cellSpursCreateJobChain(u64 spurs_ea, u64 jc_ea, u64 entry_ea,
+@@ -2709,8 +2756,11 @@ s32 cellSpursCreateJobChain(u64 spurs_ea, u64 jc_ea, u64 entry_ea,
          if (entry_ea && (u32)entry_ea < 0x10000000u)
              jc_dump_commands("CreateJobChain", (u32)entry_ea, 16);
      }
@@ -288,59 +317,169 @@ index b09220e..220e0a1 100644
 +    s32 rc = jc_register((u32)jc_ea, (u32)entry_ea, (u16)sizeJobDescriptor,
 +                         (u16)maxGrabbedJob, "CreateJobChain");
 +    jc_set_max_cont((u32)jc_ea, maxContention);
++    jc_set_prio((u32)jc_ea, (u32)prio_ea, "CreateJobChain");   /* img16 */
 +    return rc;
  }
  
  /* ---------------------------------------------------------------------------
-@@ -2738,6 +2758,36 @@ enum {                              /* CellSpursJobHeader (48 B) */
+@@ -2738,8 +2788,135 @@ enum {                              /* CellSpursJobHeader (48 B) */
      JH_SIZE          = 0x30,
  };
  
+-static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
 +/* Each chain walks on its own host thread, so jobs overlap the way they do on
 + * SPUs and must not share a cellSpursGetCurrentSpuId. A job holds a number while
 + * it runs, from the five the title gave its SPURS instance. */
 +#define JC_SPUS 5
 +extern void spurs_job_set_spu_num(uint32_t n);
 +static volatile long s_jc_spu_busy;
++/* img17: the claim waits on a condition variable instead of spinning. */
++static SRWLOCK s_jc_spu_lock = SRWLOCK_INIT;
++static CONDITION_VARIABLE s_jc_spu_cv = CONDITION_VARIABLE_INIT;
++static struct { unsigned long long claims, waits, wait_ms, max_ms; } s_jc_cs[1u << JC_SPUS];
++static unsigned long long s_jc_cs_last;
++static int s_jc_spu_need[8];   /* img20: waiters bound to this one SPU */
 +
-+static u32 jc_claim_spu(void)
++static void jc_claim_stats(void)   /* under s_jc_spu_lock */
 +{
++    static int st = -1;
++    if (st < 0) st = getenv("JC_CLAIM_STATS") ? 1 : 0;   /* T110: stats opt-in */
++    if (!st) return;
++    const unsigned long long now = GetTickCount64();
++    if (!s_jc_cs_last) { s_jc_cs_last = now; return; }
++    if (now - s_jc_cs_last < 10000ull) return;
++    s_jc_cs_last = now;
++    for (u32 m = 0; m < (1u << JC_SPUS); m++) {
++        if (!s_jc_cs[m].claims) continue;
++        fprintf(stderr, "[jc-claim] mask=0x%02X claims=%llu waits=%llu wait_ms=%llu max_ms=%llu\n", m,
++                s_jc_cs[m].claims, s_jc_cs[m].waits, s_jc_cs[m].wait_ms, s_jc_cs[m].max_ms);
++        s_jc_cs[m].claims = s_jc_cs[m].waits = s_jc_cs[m].wait_ms = s_jc_cs[m].max_ms = 0;
++    }
++}
++
++static u32 jc_claim_spu(u32 mask)   /* img16: 0 = any */
++{
++    if (!(mask & ((1u << JC_SPUS) - 1u))) mask = (1u << JC_SPUS) - 1u;
++    mask &= (1u << JC_SPUS) - 1u;
++    unsigned long long t0 = 0;
++    /* img20: JC_SPU_FAIR -- see patch_img20.py. */
++    static int fair = -1;
++    if (fair < 0) fair = (getenv("JC_SPU_FAIR") ? strcmp(getenv("JC_SPU_FAIR"), "0") != 0 : 1)   /* T110: on by default */;
++    const int single = (mask & (mask - 1u)) == 0;
++    u32 single_bit = 0;
++    if (single) { while (!(mask & (1u << single_bit))) single_bit++; }
++    int marked = 0;
++    AcquireSRWLockExclusive(&s_jc_spu_lock);
 +    for (;;) {
 +        const long busy = s_jc_spu_busy;
-+        for (u32 n = 0; n < JC_SPUS; n++) {
-+            if (busy & (1L << n)) continue;
-+            if (_InterlockedCompareExchange(&s_jc_spu_busy, busy | (1L << n), busy) == busy)
-+                return n;
-+            break;
++        int pick = -1;
++        if (fair) {
++            if (single) {
++                if (!(busy & (1L << single_bit))) pick = (int)single_bit;
++            } else {
++                for (int n = JC_SPUS - 1; n >= 0; n--)
++                    if ((mask & (1u << n)) && !(busy & (1L << n)) && !s_jc_spu_need[n]) { pick = n; break; }
++            }
++        } else {
++            for (u32 n = 0; n < JC_SPUS; n++)
++                if ((mask & (1u << n)) && !(busy & (1L << n))) { pick = (int)n; break; }
 +        }
-+        SwitchToThread();
++        if (pick >= 0) {
++            const u32 n = (u32)pick;
++            if (marked) s_jc_spu_need[single_bit]--;
++            s_jc_spu_busy = busy | (1L << n);
++            s_jc_cs[mask].claims++;
++            if (t0) {
++                const unsigned long long w = GetTickCount64() - t0;
++                s_jc_cs[mask].waits++;
++                s_jc_cs[mask].wait_ms += w;
++                if (w > s_jc_cs[mask].max_ms) s_jc_cs[mask].max_ms = w;
++            }
++            jc_claim_stats();
++            ReleaseSRWLockExclusive(&s_jc_spu_lock);
++            return n;
++        }
++        if (!t0) t0 = GetTickCount64();
++        if (fair && single && !marked) { s_jc_spu_need[single_bit]++; marked = 1; }   /* img20 */
++        SleepConditionVariableSRW(&s_jc_spu_cv, &s_jc_spu_lock, INFINITE, 0);
 +    }
 +}
 +
 +static void jc_release_spu(u32 n)
-+{
-+    for (;;) {
-+        const long busy = s_jc_spu_busy;
-+        if (_InterlockedCompareExchange(&s_jc_spu_busy, busy & ~(1L << n), busy) == busy)
-+            return;
-+    }
+ {
++    AcquireSRWLockExclusive(&s_jc_spu_lock);
++    s_jc_spu_busy &= ~(1L << n);
++    ReleaseSRWLockExclusive(&s_jc_spu_lock);
++    WakeAllConditionVariable(&s_jc_spu_cv);
 +}
 +
- static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
- {
++/* img18: JC_SPU_ORDER -- a chain's jobs claim SPUs in chain order. */
++static int s_jc_claim_next[MAX_JOBCHAINS];
++static int s_jc_done_next[MAX_JOBCHAINS];   /* img19: JC_DONE_ORDER */
++static int jc_done_order_on(void)
++{
++    static int s_on = -1;
++    if (s_on < 0) s_on = (getenv("JC_DONE_ORDER") ? strcmp(getenv("JC_DONE_ORDER"), "0") != 0 : 1)   /* T110: on by default */;
++    return s_on;
++}
++static int jc_order_on(void)
++{
++    static int s_on = -1;
++    if (s_on < 0) s_on = (getenv("JC_SPU_ORDER") ? strcmp(getenv("JC_SPU_ORDER"), "0") != 0 : 1)   /* T110: on by default */;
++    return s_on;
++}
++static void jc_order_reset(int slot)
++{
++    if (slot < 0 || slot >= MAX_JOBCHAINS) return;
++    AcquireSRWLockExclusive(&s_jc_spu_lock);
++    s_jc_claim_next[slot] = 0;
++    s_jc_done_next[slot] = 0;   /* img19 */
++    ReleaseSRWLockExclusive(&s_jc_spu_lock);
++    WakeAllConditionVariable(&s_jc_spu_cv);
++}
++static void jc_order_wait(int slot, int idx)
++{
++    AcquireSRWLockExclusive(&s_jc_spu_lock);
++    while (s_jc_claim_next[slot] < idx)
++        SleepConditionVariableSRW(&s_jc_spu_cv, &s_jc_spu_lock, INFINITE, 0);
++    ReleaseSRWLockExclusive(&s_jc_spu_lock);
++}
++static void jc_order_pass(int slot, int idx)
++{
++    AcquireSRWLockExclusive(&s_jc_spu_lock);
++    if (s_jc_claim_next[slot] <= idx) s_jc_claim_next[slot] = idx + 1;
++    ReleaseSRWLockExclusive(&s_jc_spu_lock);
++    WakeAllConditionVariable(&s_jc_spu_cv);
++}
++
++static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc, u32 spu_mask, int slot)
++{
++    const int ord = jc_order_on() && slot >= 0 && slot < MAX_JOBCHAINS;   /* img18 */
++    if (ord) jc_order_wait(slot, idx);
      u64 ea_bin_raw = vm_read64(job_ea + JH_EA_BINARY);
-@@ -2771,7 +2821,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+     u32 ea_bin     = (u32)(ea_bin_raw & ~7ull);          /* low 3 bits = flags */
+     u32 size_bin   = ((vm_read32(job_ea + JH_SIZE_BINARY) >> 16) & 0xFFFFu) << 4;
+@@ -2762,6 +2939,7 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+         if (PS3_LOG_FIRST(_b, 4))
+             printf("[cellSpurs]   job[%d]: implausible binary (ea=0x%08X size=%u) -- skipped\n",
+                    idx, ea_bin, size_bin);
++        if (ord) jc_order_pass(slot, idx);   /* img18 */
+         return;
+     }
+     /* A jobchain job is NOT a SPURS task: Sony's jm2 stages the whole working
+@@ -2771,7 +2949,11 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
       * DMA traffic at all. spu_workload_dispatch_job reproduces jm2's staging.
       * Synchronous by design: a job runs to completion, and the chain's own
       * NEXT/CALL/RET commands are what order them. */
-+    const u32 spu = jc_claim_spu();
++    const u32 spu = jc_claim_spu(spu_mask);
++    if (ord) jc_order_pass(slot, idx);   /* img18: the next job may claim now */
 +    spurs_job_set_spu_num(spu);
      spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
 +    jc_release_spu(spu);
  }
  
  /* Walk one chain's command stream. Bounded: a malformed or self-looping stream
-@@ -2798,8 +2851,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+@@ -2798,8 +2980,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
   * -----------------------------------------------------------------------*/
  
  #define MAX_JOBGUARDS 32
@@ -351,7 +490,7 @@ index b09220e..220e0a1 100644
      u32 count;       /* notifications still outstanding                    */
      u32 reset;       /* value to restore when autoReset is set             */
      u32 pending;     /* notifications received, not yet consumed        */
-@@ -2823,7 +2878,7 @@ static int jg_find(u32 ea)
+@@ -2823,7 +3007,7 @@ static int jg_find(u32 ea)
  s32 cellSpursJobGuardInitialize(u64 jc_ea, u64 guard_ea, u32 notify_count,
                                  u32 request_spu_count, u32 auto_reset)
  {
@@ -360,7 +499,7 @@ index b09220e..220e0a1 100644
      u32 ea = (u32)guard_ea;
      if (!ea) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
  
-@@ -2833,6 +2888,7 @@ s32 cellSpursJobGuardInitialize(u64 jc_ea, u64 guard_ea, u32 notify_count,
+@@ -2833,6 +3017,7 @@ s32 cellSpursJobGuardInitialize(u64 jc_ea, u64 guard_ea, u32 notify_count,
      if (i >= MAX_JOBGUARDS) return CELL_SPURS_TASK_ERROR_AGAIN;
  
      s_jobguards[i].ea         = ea;
@@ -368,7 +507,7 @@ index b09220e..220e0a1 100644
      s_jobguards[i].count      = notify_count;
      s_jobguards[i].reset      = notify_count;
      s_jobguards[i].pending    = 0;
-@@ -2863,11 +2919,15 @@ s32 cellSpursJobGuardNotify(u64 guard_ea)
+@@ -2863,11 +3048,15 @@ s32 cellSpursJobGuardNotify(u64 guard_ea)
       * OBSERVED zero, which threw away any notify that arrived while the job
       * was still running -- the title notified 6 times and the chain completed
       * 2 laps, so the thread waiting on the other 4 completions never woke. */
@@ -388,7 +527,7 @@ index b09220e..220e0a1 100644
      { static int _n = 0;
        if (PS3_LOG_FIRST(_n, 8))
            printf("[cellSpurs] JobGuardNotify(0x%08X) -> %u remaining\n",
-@@ -2895,10 +2955,13 @@ static int jg_wait(u32 ea)
+@@ -2895,10 +3084,13 @@ static int jg_wait(u32 ea)
      int i = jg_find(ea);
      if (i < 0) return 1;
      for (int spin = 0; spin < 20000; spin++) {     /* ~20 s at 1 ms */
@@ -405,7 +544,7 @@ index b09220e..220e0a1 100644
              if (!s_jobguards[i].auto_reset) s_jobguards[i].reset = 0;
              s_jobguards[i].count = s_jobguards[i].reset;
              vm_write32(ea, s_jobguards[i].count);
-@@ -3000,10 +3063,112 @@ static void jc_signal_done(u32 jc_ea, int job_index)
+@@ -3000,10 +3192,124 @@ static void jc_signal_done(u32 jc_ea, int job_index)
      }
  }
  
@@ -447,7 +586,18 @@ index b09220e..220e0a1 100644
 +        ReleaseSRWLockExclusive(&s_jcq_lock);
 +
 +        { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = w.jc_ea; }
-+        jc_run_one_job(w.job_ea, w.idx, w.size_desc);
++        jc_run_one_job(w.job_ea, w.idx, w.size_desc, jc_mask_of(w.slot), w.slot);
++        if (jc_done_order_on()) {   /* img19: announce completions in chain order */
++            AcquireSRWLockExclusive(&s_jc_spu_lock);
++            while (s_jc_done_next[w.slot] < w.idx)
++                SleepConditionVariableSRW(&s_jc_spu_cv, &s_jc_spu_lock, INFINITE, 0);
++            ReleaseSRWLockExclusive(&s_jc_spu_lock);
++            jc_signal_done(w.jc_ea, w.idx);
++            AcquireSRWLockExclusive(&s_jc_spu_lock);
++            if (s_jc_done_next[w.slot] <= w.idx) s_jc_done_next[w.slot] = w.idx + 1;
++            ReleaseSRWLockExclusive(&s_jc_spu_lock);
++            WakeAllConditionVariable(&s_jc_spu_cv);
++        } else
 +        jc_signal_done(w.jc_ea, w.idx);
 +
 +        _InterlockedIncrement(&s_jobchains[w.slot].done);
@@ -459,7 +609,8 @@ index b09220e..220e0a1 100644
 +}
 +
 +static void jc_submit(int slot, u32 job_ea, int idx, u32 size_desc, u32 par)
-+{
+ {
+-    u32 pc = entry_ea, ret_pc = 0;
 +    if (!s_jcq_started && !_InterlockedExchange(&s_jcq_started, 1)) {
 +        for (int i = 0; i < JC_POOL; i++) {
 +            HANDLE th = CreateThread(NULL, 1u << 20, jc_worker, (LPVOID)(intptr_t)i, 0, NULL);
@@ -495,8 +646,7 @@ index b09220e..220e0a1 100644
 +
 +/* Wait until every job this chain handed out has finished. */
 +static void jc_drain(int slot)
- {
--    u32 pc = entry_ea, ret_pc = 0;
++{
 +    AcquireSRWLockExclusive(&s_jcq_lock);
 +    while (s_jobchains[slot].inflight)
 +        SleepConditionVariableSRW(&s_jcq_done, &s_jcq_lock, INFINITE, 0);
@@ -517,10 +667,11 @@ index b09220e..220e0a1 100644
 +    u32 pc = s_jobchains[slot].pc, ret_pc = s_jobchains[slot].ret_pc;
      int jobs = 0;
 +    const u32 par = jc_parallel(slot);
++    jc_order_reset(slot);   /* img18: no job of this chain is in flight here */
      /* Bound IDLE steps, not total steps. A SPURS job chain is frequently a
       * SERVICE LOOP -- guard, job, sync, next, repeat -- and is meant to run for
       * the lifetime of the subsystem. A flat cap on total commands therefore
-@@ -3019,6 +3184,11 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+@@ -3019,9 +3325,14 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
          u32 ext = (u32)(cmd & 127);
  
          if (cmd != 0 && op == 0) {                    /* JOB */
@@ -531,8 +682,12 @@ index b09220e..220e0a1 100644
 +            }
              { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = jc_ea; }
              int idx = jobs++;
-             jc_run_one_job((u32)(cmd & ~7ull), idx, size_desc);
-@@ -3036,31 +3206,40 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+-            jc_run_one_job((u32)(cmd & ~7ull), idx, size_desc);
++            jc_run_one_job((u32)(cmd & ~7ull), idx, size_desc, jc_mask_of(slot), slot);
+             idle = 0;                    /* real work: the chain is healthy */
+             /* Signal per JOB, not per lap. The application waits once for each
+              * unit of work it queued -- this title notified the guard 7 times
+@@ -3036,31 +3347,40 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
          if (op == 4) { ret_pc = pc + 8; pc = (u32)(cmd & ~7ull); continue; }  /* CALL */
          if (op == 7) {
              if (ext == (7 | (15 << 3))) {                     /* END */
@@ -577,7 +732,7 @@ index b09220e..220e0a1 100644
  }
  
  static DWORD WINAPI jc_thread(LPVOID p)
-@@ -3074,9 +3253,17 @@ static DWORD WINAPI jc_thread(LPVOID p)
+@@ -3074,9 +3394,17 @@ static DWORD WINAPI jc_thread(LPVOID p)
       * Confirms timing-vs-never before committing to the async rewrite. */
      { const char* d = getenv("SPURS_JC_DELAY");
        if (d && *d) Sleep((unsigned)atoi(d)); }
@@ -598,7 +753,7 @@ index b09220e..220e0a1 100644
      /* Tell the application the chain is done. Without this the walk finishes
       * in silence and a thread waiting on the attached queue never runs again. */
      jc_signal_done(s_jobchains[slot].jc_ea, -1);
-@@ -3100,7 +3287,6 @@ static s32 jc_start(u64 jc_ea, const char* who)
+@@ -3100,7 +3428,6 @@ static s32 jc_start(u64 jc_ea, const char* who)
  {
      static int s_off = -1;
      if (s_off < 0) s_off = getenv("PS3_NO_JOBCHAIN") ? 1 : 0;
@@ -606,7 +761,7 @@ index b09220e..220e0a1 100644
      for (int i = 0; i < MAX_JOBCHAINS; i++) {
          if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
          s_jobchains[i].run_count++;
-@@ -3110,6 +3296,7 @@ static s32 jc_start(u64 jc_ea, const char* who)
+@@ -3110,6 +3437,7 @@ static s32 jc_start(u64 jc_ea, const char* who)
              jc_dump_commands(who, s_jobchains[i].entry_ea, 16);
          }
          if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
@@ -614,7 +769,7 @@ index b09220e..220e0a1 100644
          /* Coalesce: a chain already being walked must not start twice. */
          if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
              HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
-@@ -3127,6 +3314,31 @@ s32 cellSpursRunJobChain(u64 jc_ea)
+@@ -3127,6 +3455,31 @@ s32 cellSpursRunJobChain(u64 jc_ea)
      return jc_start(jc_ea, "RunJobChain");
  }
  
@@ -646,7 +801,7 @@ index b09220e..220e0a1 100644
  /* cellSpursShutdownJobChain(CellSpursJobChain*) -- the other half of the pair.
   *
   * A title that starts a chain with Run/Kick ends it with Shutdown, then blocks
-@@ -3397,6 +3609,81 @@ s32 cellSpursQueuePushBody(u64 queue_ea, u64 data_ea, u32 isBlocking)
+@@ -3397,6 +3750,81 @@ s32 cellSpursQueuePushBody(u64 queue_ea, u64 data_ea, u32 isBlocking)
      return CELL_OK;
  }
  
@@ -728,7 +883,7 @@ index b09220e..220e0a1 100644
  /* =========================================================================
   * Misc SPURS surface the title links (logged CELL_OK stubs).
   * =====================================================================*/
-@@ -3643,6 +3930,33 @@ s32 cellSpursBarrierInitialize(u64 taskset_ea, u64 barrier_ea, u32 total)
+@@ -3643,6 +4071,33 @@ s32 cellSpursBarrierInitialize(u64 taskset_ea, u64 barrier_ea, u32 total)
      return CELL_OK;
  }
  
@@ -781,7 +936,7 @@ index c4eb87d..16c09b6 100644
      return CELL_OK;
  }
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index f073f32..9b67482 100644
+index f073f32..3fd6952 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -375,11 +375,15 @@ static CellGcmReportData s_report_data[CELL_GCM_MAX_REPORT_COUNT];
@@ -881,7 +1036,7 @@ index f073f32..9b67482 100644
              if (rea) {
                  vm_write32(rea, (u32)(ts >> 32));
                  vm_write32(rea + 4u, (u32)ts);
-@@ -2478,6 +2542,25 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2478,6 +2542,41 @@ static void gcm_rsx_process_fifo_unlocked(void)
              break;
          }
          u32 w = vm_read32(ea);
@@ -894,7 +1049,23 @@ index f073f32..9b67482 100644
 +        if (w && (s_fifo_getoff & 0x1F00u) == 0x1F00u) {
 +            const u32 nea = gcm_io2ea(s_fifo_getoff + 4u);
 +            const u32 nw = nea ? vm_read32(nea) : 0u;
-+            if ((nw & 0xE0000003u) == 0x20000000u &&
++            /* img38: GCM_TAIL_KEEP_CALL (default on here): the word before the
++             * segment's closing JUMP is often a real CALL -- RDR's main-ring job puts
++             * the next material's vertex-program routine there. Skipping it drew the
++             * next material with the previous vertex program (one-frame flashes).
++             * Only step over words that are not a CALL into mapped IO or a RET. */
++            static int keep_call = -1;
++            if (keep_call < 0) { const char* e = getenv("GCM_TAIL_KEEP_CALL"); keep_call = e ? atoi(e) : 1; }
++            const int legit = keep_call && (w == 0x00020000u ||
++                              ((w & 3u) == 2u && gcm_io2ea(w & 0x1FFFFFFCu) != 0u));
++            if (legit && (nw & 0xE0000003u) == 0x20000000u &&
++                (nw & 0x1FFFFFFCu) == ((s_fifo_getoff | 0x1FFFu) + 1u)) {
++                static unsigned long kept = 0;
++                if (++kept <= 8u || (kept % 1024u) == 0u)
++                    fprintf(stderr, "[tail-keep] segment tail word 0x%08X at 0x%08X is a CALL/RET: executed (#%lu)\n",
++                            w, s_fifo_getoff, kept);
++            }
++            if (!legit && (nw & 0xE0000003u) == 0x20000000u &&
 +                (nw & 0x1FFFFFFCu) == ((s_fifo_getoff | 0x1FFFu) + 1u)) {
 +                static unsigned long skipped = 0;
 +                if (++skipped <= 8u || (skipped % 1024u) == 0u)
@@ -907,7 +1078,7 @@ index f073f32..9b67482 100644
          /* Only remember offsets BELOW put -- those are positions in the
           * ring the title is writing. A park in another region is where the
           * walker gave up, not how far it got through the ring. */
-@@ -2791,7 +2874,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2791,7 +2890,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
               * which can match, are skipped. Most of a frame's words come this
               * way (God of War HD: about five million vertex-program microcode and
               * constant words a second). */
@@ -916,7 +1087,7 @@ index f073f32..9b67482 100644
                  ((s_fifo_getoff + 4) >> 20) == ((s_fifo_getoff + count * 4) >> 20)) {
                  const u32 dea = gcm_io2ea(s_fifo_getoff + 4);
                  if (dea) {
-@@ -2953,6 +3036,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2953,6 +3052,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
                      cellGcmQueueUserCommand(vm_read32(dea));
                  } else if (mfull == 0xE920u || mfull == 0xE924u) {
                      cellGcmSetFlipCommand(vm_read32(dea) & 7u);
@@ -992,19 +1163,23 @@ index 9685261..2ba0c93 100644
              if (PS3_LOG_FIRST(reported, 32))
                  fprintf(stderr, "[RSX fp] sign-expand fetch opcode %u unsupported on unit %u (read unexpanded)\n",
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 7939d73..003d137 100644
+index 7939d73..9ae0cf1 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -125,7 +125,7 @@ extern volatile unsigned long long g_yz_auto_start_tick;
+@@ -125,8 +125,11 @@ extern volatile unsigned long long g_yz_auto_start_tick;
   * -----------------------------------------------------------------------*/
  
  #define LD_SWAP_BUFFERS  2
 -#define MAX_SURFACES     64
 +#define MAX_SURFACES     512
  #define MAX_TEXTURES     1024
++#define LD_TEX_HASH      4096   /* buckets of the texture cache index, power of two */
++#define LD_SURF_HASH     1024   /* buckets of the surface index, power of two */
++#define LD_ALLOC_POOL    8      /* command allocators for lists submitted without a wait */
  #define MAX_RETIRED_TEXTURES 4096
  #define MAX_VTEX         64
-@@ -211,6 +211,7 @@ typedef struct {
+ #define MAX_SAMPLERS     128
+@@ -211,6 +214,7 @@ typedef struct {
      /* Top-left windows of the surface for smaller aliasing textures (see surface_window). */
      struct { ID3D12Resource* tex; ID3D12Resource* src; u32 w, h, wgen, used; } swin[LD_SWIN_PER];
      u32 swin_wgen;            /* bumped by every write into the surface; a window older than it is recopied */
@@ -1012,15 +1187,38 @@ index 7939d73..003d137 100644
  #if !defined(YZ_PERF_CLEAN)
      u32 resource_serial;
      u32 last_write_generation;
-@@ -303,6 +304,7 @@ typedef struct {
+@@ -291,6 +295,10 @@ typedef struct {
+     ID3D12Device*              dev;
+     ID3D12CommandQueue*        queue;
+     ID3D12CommandAllocator*    alloc;
++    ID3D12CommandAllocator*    alloc_pool[LD_ALLOC_POOL]; /* [0] is the original alloc */
++    u64                        alloc_fence[LD_ALLOC_POOL];/* last fence recorded on it, 0 = idle */
++    u32                        alloc_cur;
++    u32                        draws_since_submit;
+     ID3D12GraphicsCommandList* list;
+     ID3D12Fence*               fence;
+     HANDLE                     fence_event;
+@@ -303,6 +311,10 @@ typedef struct {
  
      surface_t                  surfaces[MAX_SURFACES];
      u32                        n_surfaces;
++    u64                        surf_key[MAX_SURFACES];  /* (location << 32) | offset of surfaces[i] */
++    u16                        surf_head[LD_SURF_HASH]; /* bucket -> slot + 1, 0 = empty */
++    u16                        surf_next[MAX_SURFACES]; /* slot -> next slot + 1 in its bucket */
 +    u64                        surface_write_serial;
      display_buffer_t           display_buffers[8];
  
      ID3D12DescriptorHeap*      dsv_heap;
-@@ -488,6 +490,7 @@ static void ld_surface_note_write(u32 target, u32 kind)
+@@ -318,6 +330,8 @@ typedef struct {
+     ID3D12Resource*            white_tex;
+     texcache_t                 textures[MAX_TEXTURES];
+     u32                        n_textures;
++    u16                        tex_head[LD_TEX_HASH];   /* bucket -> slot + 1, 0 = empty */
++    u16                        tex_next[MAX_TEXTURES];  /* slot -> next slot + 1 in its bucket */
+     vtexcache_t                vtex[MAX_VTEX];
+     u32                        n_vtex;
+     ID3D12Resource*            retired_textures[MAX_RETIRED_TEXTURES];
+@@ -488,6 +502,7 @@ static void ld_surface_note_write(u32 target, u32 kind)
      if (target >= MAX_SURFACES)
          return;
      surface_t* surface = &g.surfaces[target];
@@ -1028,7 +1226,7 @@ index 7939d73..003d137 100644
      const u32 generation = ++g_ld_surface_generation;
      surface->swin_wgen++;
      surface->last_write_generation = generation;
-@@ -518,7 +521,10 @@ static void ld_surface_note_write(u32 target, u32 kind)
+@@ -518,7 +533,10 @@ static void ld_surface_note_write(u32 target, u32 kind)
  }
  #else
  #define ld_surface_note_write(target, kind) \
@@ -1040,7 +1238,202 @@ index 7939d73..003d137 100644
  #endif
  
  #define LD_LAYOUT_CACHE_CAP 256u
-@@ -2986,6 +2992,7 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+@@ -1823,6 +1841,8 @@ static void ld_flush(ld_flush_reason reason)
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
+     g.upload_used = 0;
++    g.alloc_fence[g.alloc_cur] = 0;
++    g.draws_since_submit = 0;
+ #if defined(YZ_PERF_PROFILE)
+     const u64 flush_ticks = (u64)(ld_profile_qpc() - flush_begin);
+     g_ld_profile.total.flush_qpc += flush_ticks;
+@@ -1830,6 +1850,86 @@ static void ld_flush(ld_flush_reason reason)
+ #endif
+ }
+ 
++/* LD_SUBMIT_EVERY=<n> (default 256, 0 = off): hand the open command list to
++ * the GPU every n draws WITHOUT waiting, and keep recording on a list from
++ * the next allocator of a small pool. Before, the GPU received a frame's
++ * commands only at ld_flush (descriptor ring full, Present) and the CPU then
++ * waited for all of them, so CPU and GPU never worked at the same time.
++ * Rings, retired textures and every ld_flush are unchanged: they are
++ * recycled only after a full wait, so nothing a submitted list may still
++ * read is overwritten. An allocator is reset only once the GPU has passed
++ * the last list recorded on it. Called at the start of a draw, where the
++ * vertex-ring flush already splits the list: every draw sets all of its
++ * command-list state again. */
++static u32 ld_submit_every(void)
++{
++    static int every = -1;
++    if (every < 0) {
++        const char* e = getenv("LD_SUBMIT_EVERY");
++        every = e ? atoi(e) : 256;
++        if (every < 0) every = 0;
++        for (u32 i = 0; i < LD_ALLOC_POOL; i++)
++            if (!g.alloc_pool[i]) every = 0;
++        fprintf(stderr, "[live-draw] submit every %d draws without a wait "
++                        "(%u allocators)\n", every, (unsigned)LD_ALLOC_POOL);
++    }
++    return (u32)every;
++}
++
++static unsigned long long g_ld_async_submits = 0, g_ld_async_alloc_waits = 0;
++
++static void ld_submit_async(void)
++{
++    const HRESULT close_hr = g.list->lpVtbl->Close(g.list);
++    if (FAILED(close_hr)) {
++        fprintf(stderr, "[d3d-fail] async Close hr=0x%08lX frame=%u\n",
++                (unsigned long)close_hr, g_ld_frames);
++        ld_dump_dred("Close", close_hr);
++        g.ready = 0;
++        return;
++    }
++    ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
++    g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
++    const u64 v = ++g.fence_value;
++    const HRESULT signal_hr = g.queue->lpVtbl->Signal(g.queue, g.fence, v);
++    if (FAILED(signal_hr)) {
++        fprintf(stderr, "[d3d-fail] async Signal hr=0x%08lX frame=%u\n",
++                (unsigned long)signal_hr, g_ld_frames);
++        ld_dump_dred("Signal", signal_hr);
++        g.ready = 0;
++        return;
++    }
++    g.alloc_fence[g.alloc_cur] = v;
++    g.alloc_cur = (g.alloc_cur + 1) % LD_ALLOC_POOL;
++    const u64 need = g.alloc_fence[g.alloc_cur];
++    u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    if (need && done != UINT64_MAX && done < need) {
++        g_ld_async_alloc_waits++;
++        if (SUCCEEDED(g.fence->lpVtbl->SetEventOnCompletion(g.fence, need,
++                                                            g.fence_event)))
++            WaitForSingleObject(g.fence_event, INFINITE);
++        done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    }
++    if (done == UINT64_MAX || (need && done < need)) {
++        fprintf(stderr, "[d3d-fail] async allocator wait completed=%llu "
++                        "required=%llu frame=%u\n",
++                (unsigned long long)done, (unsigned long long)need, g_ld_frames);
++        ld_dump_dred("FenceWait", DXGI_ERROR_DEVICE_REMOVED);
++        g.ready = 0;
++        return;
++    }
++    g.alloc = g.alloc_pool[g.alloc_cur];
++    g.alloc->lpVtbl->Reset(g.alloc);
++    g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    g.alloc_fence[g.alloc_cur] = 0;
++    g.draws_since_submit = 0;
++    g_ld_async_submits++;
++    if ((g_ld_async_submits & 4095u) == 0)
++        fprintf(stderr, "[live-draw] async submits=%llu allocator-waits=%llu "
++                        "frame=%u\n", g_ld_async_submits,
++                g_ld_async_alloc_waits, g_ld_frames);
++}
++
+ /* Public wrapper for the RSX SET_REFERENCE / sync fence: block until the GPU
+  * has finished all queued draws (mirrors RPCS3 nv406e::set_reference's sync(),
+  * RSXThread.cpp), so the game's REF poll advances only after the GPU has really
+@@ -2500,6 +2600,58 @@ static void write_texture_srv(u32 index, const texcache_t* entry)
+     }
+ }
+ 
++/* Texture cache index: the lookup key is the full descriptor tuple that
++ * texture_srv_slot compares. Keys in the cache are unique (an entry is only
++ * added after a lookup misses), so following one bucket finds exactly the
++ * entry the old linear scan over all MAX_TEXTURES slots found. */
++static u32 tex_bucket(u32 location, u32 offset, u32 format, u32 width,
++                      u32 height, u32 pitch, u32 remap, u32 cubemap)
++{
++    u64 h = 1469598103934665603ull;
++    const u32 k[8] = {location, offset, format, width, height, pitch, remap, cubemap};
++    for (u32 i = 0; i < 8; i++) { h ^= k[i]; h *= 1099511628211ull; }
++    return (u32)(h ^ (h >> 29)) & (LD_TEX_HASH - 1);
++}
++static u32 tex_entry_bucket(const texcache_t* e)
++{
++    return tex_bucket(e->location, e->offset, e->format, e->width, e->height,
++                      e->pitch, e->remap, e->cubemap);
++}
++static void tex_index_link(u32 index)
++{
++    const u32 b = tex_entry_bucket(&g.textures[index]);
++    g.tex_next[index] = g.tex_head[b];
++    g.tex_head[b] = (u16)(index + 1);
++}
++static void tex_index_unlink(u32 index)
++{
++    u16* link = &g.tex_head[tex_entry_bucket(&g.textures[index])];
++    while (*link && *link != index + 1) link = &g.tex_next[*link - 1];
++    if (*link) *link = g.tex_next[index];
++    g.tex_next[index] = 0;
++}
++
++/* Surface index by (location, offset). surf_key[slot] is written in one place,
++ * when a slot is created, and the slot keeps that key for its lifetime. */
++static u32 surf_bucket(u64 key)
++{
++    key *= 0x9E3779B97F4A7C15ull;
++    return (u32)(key >> 54) & (LD_SURF_HASH - 1);
++}
++static void surf_index_link(u32 slot)
++{
++    const u32 b = surf_bucket(g.surf_key[slot]);
++    g.surf_next[slot] = g.surf_head[b];
++    g.surf_head[b] = (u16)(slot + 1);
++}
++static void surf_index_unlink(u32 slot)
++{
++    u16* link = &g.surf_head[surf_bucket(g.surf_key[slot])];
++    while (*link && *link != slot + 1) link = &g.surf_next[*link - 1];
++    if (*link) *link = g.surf_next[slot];
++    g.surf_next[slot] = 0;
++}
++
+ /* Decode a guest texture descriptor into a cached SRV slot.  Unlike the old
+  * descriptor-only cache, re-hash the source once per frame and refresh the
+  * D3D resource when the game rewrites the same guest address. */
+@@ -2510,7 +2662,11 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+     if (refresh_enabled < 0)
+         refresh_enabled = getenv("RSX_NO_TEX_REFRESH") ? 0 : 1;
+ 
+-    for (u32 i = 0; i < g.n_textures; i++) {
++    for (u32 link = g.tex_head[tex_bucket(t->location, t->offset, t->format,
++                                          t->width, t->height, t->pitch,
++                                          remap, t->cubemap)];
++         link; link = g.tex_next[link - 1]) {
++        const u32 i = link - 1;
+         texcache_t* entry = &g.textures[i];
+         if (entry->location != t->location || entry->offset != t->offset ||
+             entry->format != t->format || entry->width != t->width ||
+@@ -2642,11 +2798,16 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+         texcache_t* entry = &g.textures[index];
+         if (evicted)
+             retire_texture(evicted);
++        if (cache_was_full)
++            tex_index_unlink(index);
+         *entry = replacement;
++        tex_index_link(index);
+         write_texture_srv(index, entry);
+     } else {
+-        if (!cache_was_full)
++        if (!cache_was_full) {
+             g.textures[index] = replacement;
++            tex_index_link(index);
++        }
+         g_ld_texture_decode_fail++;
+         if (g_ld_texture_decode_fail <= 16 ||
+             (g_ld_texture_decode_fail & (g_ld_texture_decode_fail - 1)) == 0)
+@@ -2981,11 +3142,16 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+         if (s->swin[j].tex) { retire_texture(s->swin[j].tex); s->swin[j].tex = NULL; }
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
++    if (slot < g.n_surfaces)              /* not reached today: slots are only appended */
++        surf_index_unlink(slot);
++    g.surf_key[slot] = ((u64)location << 32) | offset;
++    surf_index_link(slot);
+     s->fmt = want_fmt;
+ #if !defined(YZ_PERF_CLEAN)
      s->resource_serial = ++g_ld_surface_resource_serial;
  #endif
      ld_surface_note_write(slot, LD_SURFACE_WRITE_CREATE);
@@ -1048,7 +1441,7 @@ index 7939d73..003d137 100644
      /* RTVs for surfaces live above the swap-chain backbuffer RTVs */
      g.dev->lpVtbl->CreateRenderTargetView(g.dev, s->tex,
          NULL, rtv_handle(LD_SWAP_BUFFERS + slot));
-@@ -3123,6 +3130,54 @@ static int surface_window(u32 si, const rsx_dsp_texture* t, int dbg)
+@@ -3123,6 +3289,54 @@ static int surface_window(u32 si, const rsx_dsp_texture* t, int dbg)
      return (int)(SRV_SURF_WIN_BASE + si * LD_SWIN_PER + k);
  }
  
@@ -1103,7 +1496,7 @@ index 7939d73..003d137 100644
  /* A draw that samples its own render target. RSX reads and writes the same
   * surface in one pass (GH3's post pass reads the scene at 0x200000 while
   * drawing into 0x200000); D3D12 cannot, and the lookup used to fall back to
-@@ -5121,6 +5176,7 @@ typedef struct {
+@@ -5121,6 +5335,7 @@ typedef struct {
      batch_t idx[256]; u32 n_idx;
      u32     n_packets;
      vtx_t*  verts; u32 n_verts, cap_verts;
@@ -1111,7 +1504,7 @@ index 7939d73..003d137 100644
      rsx_vertex_ref* refs; u32 n_refs, cap_refs;
      u32     n_source_refs;
      int     refs_remapped;
-@@ -5142,6 +5198,7 @@ static draw_ctx dc;
+@@ -5142,6 +5357,7 @@ static draw_ctx dc;
  static void dc_reset(void)
  {
      dc.n_arr = dc.n_idx = dc.n_verts = dc.n_refs = 0;
@@ -1119,7 +1512,7 @@ index 7939d73..003d137 100644
      dc.n_source_refs = 0;
      dc.refs_remapped = 0;
      dc.n_packets = 0;
-@@ -5510,6 +5567,8 @@ static const float* dc_vertex_attr(
+@@ -5510,6 +5726,8 @@ static const float* dc_vertex_attr(
          return (const float*)(
              dc.compact_verts + (u64)vertex * dc.layout.stride +
              (u32)slot * 16u);
@@ -1128,7 +1521,7 @@ index 7939d73..003d137 100644
      memcpy(fallback, dc.fetch_plan.attr[attr].default_value, 16);
      return fallback;
  }
-@@ -5522,7 +5581,7 @@ static const float* dc_vertex_attr(
+@@ -5522,7 +5740,7 @@ static const float* dc_vertex_attr(
  static const float* dc_vertex_attr_canonical(
      u32 vertex, u32 attr, float fallback[4])
  {
@@ -1137,7 +1530,7 @@ index 7939d73..003d137 100644
          return dc.verts[vertex].a[attr];
      const s8 slot = dc.layout.slot_by_attr[attr];
      if (slot >= 0 && vertex < dc.n_verts)
-@@ -6344,6 +6403,26 @@ static void ld_movie_capture_overlay(void)
+@@ -6344,6 +6562,26 @@ static void ld_movie_capture_overlay(void)
  }
  
  static void sink_begin(void* u, const rsx_dispatch* r, u32 prim) { (void)u; (void)r; (void)prim; dc_reset(); }
@@ -1164,7 +1557,7 @@ index 7939d73..003d137 100644
  static void sink_draw_arrays(void* u, const rsx_dispatch* r, u32 first, u32 count)
  {
      (void)u; (void)r; g_ld_stats.packets_seen++;
-@@ -6371,6 +6450,8 @@ static void sink_inline_array(void* u, const rsx_dispatch* r,
+@@ -6371,6 +6609,8 @@ static void sink_inline_array(void* u, const rsx_dispatch* r,
          return;
      }
  
@@ -1173,7 +1566,7 @@ index 7939d73..003d137 100644
      const u32 stride = rsx_vertex_inline_layout(&g.rsx, dc.inl_off);
      if (!stride || bytes < stride) { g_ld_stats.packets_queue_full++; return; }
  
-@@ -7162,7 +7243,18 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -7162,7 +7402,18 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          g_ld_profile.total_used_attribute_max = used_layout.count;
      const LONGLONG fetch_pack_begin = ld_profile_qpc();
  #endif
@@ -1193,18 +1586,68 @@ index 7939d73..003d137 100644
          fetch_batches_hoisted(&used_layout, 1);
      } else if (ld_vertex_hoist_fetch()) {
          rsx_vertex_layout_plan legacy_layout;
-@@ -7509,7 +7601,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -7210,6 +7461,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g_ld_stats.group_drop_ring++;
+         return;
+     }
++    {   const u32 every = ld_submit_every();
++        if (every && ++g.draws_since_submit >= every) {
++            ld_submit_async();
++            if (!g.ready) return;
++        }
++    }
+     if ((u64)g.vb_used + draw_vb_bytes > vb_capacity ||
+         (u64)g.ib_used + draw_ib_bytes > INDEX_BUFFER_SIZE) {
+         /*
+@@ -7509,18 +7766,30 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
                      zeta_pref = 1;
                      break;
                  }
 -        if (!zeta_pref) { u32 best_gen = 0;
+-          for (u32 i = 0; i < g.n_surfaces; i++) {
 +        const int current_feedback = !zeta_pref &&
 +            surface_feedback_matches(&g.surfaces[target], &t, &sf);
-+        if (!zeta_pref && !current_feedback) { u32 best_gen = 0;
-           for (u32 i = 0; i < g.n_surfaces; i++) {
++        if (!zeta_pref && !current_feedback) { u32 best_gen = 0; int exact = -1;
++          /* Walks one bucket of the surface index and makes the choice the
++           * scan in slot order made: the lowest slot whose size matches the
++           * descriptor, else the most recently drawn one, lowest slot on a tie. */
++          for (u32 link = g.surf_head[surf_bucket(((u64)t.location << 32) | t.offset)];
++               link; link = g.surf_next[link - 1]) {
++              const u32 i = link - 1;
                const surface_t* sf_i = &g.surfaces[i];
                if (sf_i->location != t.location || sf_i->offset != t.offset ||
-@@ -8545,6 +8639,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+                   i == target)
+                   continue;
+-              if (sf_i->w == t.width && sf_i->h == t.height) { sampled = (int)i; break; }
+-              if (sampled < 0 || sf_i->last_draw_generation > best_gen) {
++              if (sf_i->w == t.width && sf_i->h == t.height) {
++                  if (exact < 0 || i < (u32)exact) exact = (int)i;
++                  continue;
++              }
++              if (sampled < 0 || sf_i->last_draw_generation > best_gen ||
++                  (sf_i->last_draw_generation == best_gen && i < (u32)sampled)) {
+                   sampled = (int)i;
+                   best_gen = sf_i->last_draw_generation;
+               }
+-          } }
++          }
++          if (exact >= 0) sampled = exact; }
+         /* LD_UVDBG=1: the texture coordinates of the draw that samples the PS1
+          * framebuffer. Placed here rather than in fetch_batches because that
+          * function is not on this draw's path -- probing it printed nothing at
+@@ -8398,6 +8667,11 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     g.dev->lpVtbl->CreateCommandQueue(g.dev, &qd, &IID_ID3D12CommandQueue, (void**)&g.queue);
+     g.dev->lpVtbl->CreateCommandAllocator(g.dev, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                           &IID_ID3D12CommandAllocator, (void**)&g.alloc);
++    g.alloc_pool[0] = g.alloc;
++    for (u32 i = 1; i < LD_ALLOC_POOL; i++)
++        g.dev->lpVtbl->CreateCommandAllocator(g.dev, D3D12_COMMAND_LIST_TYPE_DIRECT,
++                                              &IID_ID3D12CommandAllocator,
++                                              (void**)&g.alloc_pool[i]);
+     g.dev->lpVtbl->CreateCommandList(g.dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.alloc, NULL,
+                                      &IID_ID3D12GraphicsCommandList, (void**)&g.list);
+     if (g.queue) g.queue->lpVtbl->SetName(g.queue, L"rsx-live-queue");
+@@ -8545,6 +8819,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
      sink.inline_array = sink_inline_array;
      sink.draw_index_array = sink_draw_index;
      sink.flip = sink_flip;

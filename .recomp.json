@@ -17,9 +17,10 @@
     { "name": "Pedro Wally Bandeira", "link": "https://github.com/pedrowallybandeira" }
   ],
   "help": [
-    "Performance: CPU-bound at ~6 FPS (SPU float emulation, SPURS job chains)",
-    "RSX live-draw rendering defects in the 3D scene",
-    "Vulkan backend: 3D renders as flat polygons on this game"
+    "Cast shadows: the world shadow atlas only receives the first of four cascades",
+    "Performance: CPU-bound at 4-10 FPS in town (FIFO/live-draw thread ~90% busy)",
+    "Distant vegetation renders as dark blocky shapes; blurry ground textures",
+    "Intermittent hang while loading a cutscene (SPURS taskset in WAIT_SIGNAL)"
   ],
-  "notes": "Boots, goes through the menus and reaches the first 3D cutscene at 4-6 FPS. Audio works (music, ambience, intro videos). Not playable."
+  "notes": "Boots through the intro and the title screen into Armadillo: walking, climbing, shooting, melee and autosave work and the first mission starts, at 4-10 FPS in town. Audio works. No color flicker since v19; sunlight and reflections fixed in an experiment, cast shadows still missing."
 }

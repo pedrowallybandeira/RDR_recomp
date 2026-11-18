@@ -1,31 +1,30 @@
 # Estado do port / Status
 
-*Resumo do diário de tentativas do autor (83 tentativas, outubro–novembro de 2026). English summary at the end.*
+*Resumo do diário de tentativas do autor (140 tentativas, outubro–novembro de 2026). English summary at the end.*
 
-## Onde está (2026-11-12)
+## Onde está (2026-11-17)
 
-Build adotado: ps3recomp v0.19.0 + 12 PRs abertos do toolkit (`patches/ps3recomp-v0.19.0-upstream-prs.patch`) + `patches/ps3recomp-v0.19.0-rdr.patch` (que já inclui os PRs sp00nznet/ps3recomp#701, sp00nznet/ps3recomp#665 e sp00nznet/ps3recomp#662). Lift feito com o lifter da v0.18.0 + `patches/ps3recomp-v0.18.0-ppu_lifter.patch`.
+Build adotado (v19): ps3recomp v0.19.0 + 12 PRs abertos do toolkit (`patches/ps3recomp-v0.19.0-upstream-prs.patch`) + `patches/ps3recomp-v0.19.0-rdr.patch` (que já inclui os PRs sp00nznet/ps3recomp#701, sp00nznet/ps3recomp#665 e sp00nznet/ps3recomp#662). Lift feito com o lifter da v0.18.0 + `patches/ps3recomp-v0.18.0-ppu_lifter.patch`. 29 jobs SPU traduzidos (`spu/images.json`).
 
-Boot de regressão (200 s, `boot_seguro.ps1`, `PAD_SCRIPT` até a cena):
+Boot de conferência (`seg343`, 600 s, visível, jogado com o controle de Xbox):
 
 | Medida | Valor |
 | :--- | :--- |
-| Telas iniciais | ~58 FPS |
-| Tela título | 5,3–6,8 FPS |
-| Primeira cena 3D | a partir de ~115–120 s, **3,5–10 FPS** (a maior parte entre 4 e 6) |
-| Áudio | contínuo: abertura (vídeos Bink), tela título e cena; 0–1% de blocos mudos fora das transições |
+| Abertura | vídeos Bink com som, tela título, carga, cutscene do trem (20–30 FPS) |
+| Parte jogável | Armadillo: andar, correr, subir na caixa d'água, pular de telhados, atirar, brigar, autosave |
+| FPS na rua | mediana 5,5 (4–10 conforme a cena; até ~1 FPS por ~15 s em cenas com 17 mil desenhos) |
+| Pisca de cor de um quadro | nenhum |
 | Jobs SPU sem tradução (`dispatch MISS`) | 0 |
-| Memória privada (pico) | ~2,2 GB |
+| Memória privada (pico) | ~2,5 GB |
 
-**Áudio funcionando** desde a tentativa 79: música, ambiente (cigarras, pássaros, vento) e os vídeos da abertura. Foram sete correções independentes (ver a linha do tempo, tentativas 67–78).
+**Jogável na cidade** desde a tentativa 85; **combate** (soco, tiro, mortes) desde a 113; **primeira missão** iniciada na 114 (entrar no saloon); **controle de Xbox** funcionando.
 
 O que não funciona:
 
-- **Desempenho:** ~6 FPS na tela título e 4–6 na cena; o jogo é limitado pela CPU. Num experimento com o sp00nznet/ps3recomp#632 (`SPU_FLOAT_RZ=1`: float do SPU nativo e exato em x86), a tela título foi a **29–44 FPS** numa rodada; a cena não mudou, e o jogo travou na cena aos 175 s. Ainda não entrou no build.
-- **Imagem:** a cena é desenhada com defeitos (cintilação, elementos que somem, trechos escuros).
-- **Backend Vulkan:** testado no Windows (tentativa 82, com o sp00nznet/ps3recomp#746). Desenha as telas 2D e a tela título, mas o 3D sai em polígonos chapados e o jogo cai para ~1,5 FPS na tela título. O motor `rsx_live_draw` com Direct3D 12 continua sendo o renderer.
-- **Estabilidade:** o PC hospedeiro já congelou em boots longos; por isso o jogo só roda por `boot_seguro.ps1`, com vigia independente. A passagem da abertura para a tela título às vezes para por alguns segundos.
-- **Entrada:** só XInput; um gamepad USB genérico não aparece, e o teclado só funciona com a porta 0 vazia.
+- **Desempenho:** limitado pela CPU (4–10 FPS na rua). A thread do FIFO/live draw fica ~90% ocupada, sobretudo montando vértices e lendo o FIFO.
+- **Imagem:** no build adotado a cena só tem luz ambiente: sem sol, sem sombra, superfícies chapadas. Em experimento (tentativas 134–135) a luz voltou: a passada de luz lê a profundidade da cena como textura A8R8G8B8, e o live draw entregava a memória do PS3 (zeros); uma cópia da profundidade do host no formato D24S8 trouxe sol, névoa, reflexos na água e feixes de luz. A sombra projetada ainda não aparece: o atlas de sombra do mundo (1200×1200) só recebe a primeira de quatro cascatas (tentativas 136–140, em diagnóstico). Vegetação ao longe sai em blocos escuros de escadinha; o chão sai borrado.
+- **Cutscene:** às vezes a carga de uma cutscene para com um taskset SPURS esperando em `WAIT_SIGNAL` (sempre, com as cadeias de jobs em série).
+- **Estabilidade:** o PC hospedeiro já congelou em sessões longas de boots seguidos; o jogo só roda por `boot_seguro.ps1`, com vigia independente.
 
 ## Linha do tempo
 
@@ -60,28 +59,41 @@ O que não funciona:
 | 81 | 12 PRs abertos do ps3recomp na base | Vulkan no Windows (#746, #754, #702, #736, #738) e estabilidade (#764, #713, #759, #758, #760, #761, #601) |
 | 82 | primeiro boot com Vulkan | telas 2D e tela título; 3D chapado, ~1,5 FPS |
 | 83 | tela título a 29–44 FPS (experimento, uma rodada) | sp00nznet/ps3recomp#632 com `SPU_FLOAT_RZ=1` |
+| 84 | cena de 5,1–5,5 para 7,2–8,2 FPS | índices de hash para texturas e superfícies; envio parcial da lista de comandos sem esperar a GPU |
+| 85 | **primeira vez jogável**: John Marston anda pela cidade | teclado mapeado para o controle (experimento) |
+| 86–93 | defeitos da cena medidos | registro desenho a desenho, RenderDoc dentro do port, referência do RPCS3 (só leitura); recorte de profundidade do RSX (experimento) |
+| 94–101 | origem das rajadas de vértices quebrados | o job da grama usa um anel de vértices por SPU, e a cadeia só pode rodar nas SPUs da sua tabela de prioridade (`JC_SPU_PRIO`, sp00nznet/ps3recomp#803) |
+| 102–107 | as rajadas restantes somem; controle de Xbox funcionando | reserva de SPU e aviso de fim de job em ordem no modo paralelo (`JC_SPU_ORDER`, `JC_DONE_ORDER`) |
+| 108–110 | **combate sem congelar** | inanição da SPU 0 (`JC_SPU_FAIR`) |
+| 111–113 | tiro que acerta e mortes funcionam | o job SPU de 93 KB que faltava, traduzido (29 jobs) |
+| 114 | **primeira missão iniciada** (entra no saloon) | — |
+| 115–131 | **fim do pisca de cor de um quadro** | o remendo do FIFO que pulava a palavra do fim dos segmentos de 8 KB pulava também a CALL da rotina de vertex program do material seguinte; agora só pula o que não é CALL/RET (`GCM_TAIL_KEEP_CALL`) |
+| 132–133 | build adotado: v19 | 84 + 101–113 + 131, sem sondas; conferência sem pisca nem travamento |
+| 134–135 | **sol, névoa e reflexos** (experimento) | profundidade lida como A8R8G8B8 vem de uma cópia da profundidade do host (bytes D24S8 big-endian, *remap* da textura) |
+| 136–140 | sombra projetada ainda ausente (em diagnóstico) | comparação de profundidade do RSX ligada; o atlas de sombra só recebe a primeira cascata |
 
 ## Próximos passos
 
-1. Desempenho: confirmar o #632 (rodadas de controle, travamento na cena) e testar os outros PRs de desempenho do toolkit um por vez.
-2. Imagem: os defeitos da cena no `rsx_live_draw`.
-3. Mandar ao ps3recomp as correções genéricas de áudio: estado do BGM do `cellSysutil`, saída do EcoQoS, espera limitada do `usleep` (junto do sp00nznet/ps3recomp#628) e `PPU_PRIO_ABOVE`.
-4. Lifter: despachos `BRANCH-TO-N unresolved` restantes.
+1. Imagem: adotar a correção da luz (134–135); fazer o atlas de sombra receber as quatro cascatas (138–140); vegetação em blocos; chão borrado (anisotropia e LOD bias).
+2. A parada na carga de cutscenes (`WAIT_SIGNAL`).
+3. Desempenho: a thread do FIFO/live draw (montagem de vértices, leitura do FIFO); os PRs de desempenho do toolkit, um por vez.
+4. Mandar ao ps3recomp as correções genéricas: as das cadeias de jobs (sp00nznet/ps3recomp#712 e sp00nznet/ps3recomp#803), o estado do BGM do `cellSysutil`, as cópias NV0039 e a espera limitada do `usleep`.
 
 ## Pendências conhecidas
 
 - `cellSpursTaskGenerateLsPattern`, `cellSpursTaskGetLoadableSegmentPattern` e `cellSpursEnableExceptionEventHandler` sem handler.
 - Faltam testes unitários para `LWM_FREE`, argumentos do taskset, `ReadWithOffset`/`WriteWithOffset` e o limite de semáforos.
 - O patch do RDR inclui ajustes específicos deste jogo (o salto da "segment tail word" no FIFO em `cellGcmSys.c`, as pontes `rdr2_spu_*` em `cellSpurs.c`) que não devem ir para o toolkit como estão.
+- Os logs `[tail-keep]` e `segment tail word` são amostrados (as 8 primeiras linhas e uma a cada 1.024): contar linhas subestima os eventos.
 
 ---
 
 ## English summary
 
-**Where it is (2026-11-12):** ps3recomp v0.19.0 plus 12 open upstream PRs (Vulkan on Windows and stability fixes) plus this repository's patch, lifted with the v0.18.0 lifter plus the jump-table patch. A 200 s regression boot runs the intro screens at ~58 FPS, the title screen at 5.3–6.8 FPS, and reaches the **first 3D cutscene** after ~115–120 s at 3.5–10 FPS (mostly 4–6), with zero untranslated SPU jobs and ~2.2 GB peak private memory.
+**Where it is (2026-11-17):** build v19 = ps3recomp v0.19.0 plus 12 open upstream PRs plus this repository's patch, lifted with the v0.18.0 lifter plus the jump-table patch; 29 SPU jobs lifted. A 600 s check boot (`seg343`, played with an Xbox controller) goes through the intro videos (with sound), the title screen and the train cutscene (20–30 FPS) into **Armadillo, which is playable**: walking, running, climbing, jumping off roofs, shooting, melee and autosave all work, and the **first mission starts** (go to the saloon). Town runs at a median of 5.5 FPS (4–10 depending on the scene), with zero untranslated SPU jobs and ~2.5 GB peak private memory.
 
-**Audio works** (attempt 79): music, ambience and the intro Bink videos. It took seven independent fixes: executing the RSX NV0039 memory-to-memory copies on subchannel 1; lifting the Multistream's runtime-loaded MP3 decoder (`flashMP3.pic`, from your own firmware; the output stays local); raising high-priority guest threads to `ABOVE_NORMAL`; leaving Windows 11 EcoQoS and bounding the `usleep` wait (the high-resolution timer sometimes never fires); native float in the audio units only; and reporting the XMB BGM playback status with the PS3's values (the toolkit told the game user music was playing, so it muted the videos).
+**Fixed since the last update:** SPURS job chains in parallel mode now honor each chain's SPU priority table, reserve SPUs and signal job completion in order, and no longer starve SPU 0 (this removed corrupted grass vertices and a freeze in combat); the last missing 93 KB SPU job is lifted; the **one-frame color flicker is gone** (our own FIFO workaround skipped the word at the end of 8 KB command segments, and that word was often a legit CALL to the next material's vertex-program routine); hash indices for texture/surface lookups and partial command-list submission without waiting on the GPU (~+40% in cutscenes).
 
-**Not working yet:** performance is CPU-bound (~6 FPS at the title, 4–6 in the scene). An experiment with sp00nznet/ps3recomp#632 (`SPU_FLOAT_RZ=1`) ran the title screen at 29–44 FPS in one run, but the scene did not change and the game hung there at 175 s; it is not in the build yet. The scene still renders with defects. The Vulkan backend (via #746) draws the 2D screens and the title screen on Windows, but 3D comes out as flat polygons at ~1.5 FPS, so `rsx_live_draw` on Direct3D 12 stays the renderer. The host PC has frozen on long boots, so only run the game through the guarded boot script. Input is XInput only.
+**Not working yet:** performance is CPU-bound (the FIFO/live-draw thread is ~90% busy). In the adopted build the scene has ambient light only. In an experiment the sun, fog, water reflections and light shafts are back: the light pass reads the scene depth as an A8R8G8B8 texture, which used to fall back to guest memory (zeros); it now gets a copy of the host depth in the big-endian D24S8 layout. Cast shadows are still missing: the world shadow atlas (1200x1200) only receives the first of four cascades (under investigation). Distant vegetation renders as dark blocky shapes and the ground is blurry. Loading a cutscene sometimes hangs with a SPURS taskset in `WAIT_SIGNAL`. The host PC has frozen during long series of boots, so only run the game through the guarded boot script.
 
-**Next:** confirm #632 and try the other upstream performance PRs one at a time, fix the scene's rendering defects, and upstream the generic audio fixes.
+**Next:** adopt the lighting fix, get all four shadow cascades into the atlas, fix the vegetation and the ground textures, the cutscene hang, then performance; upstream the generic job-chain and audio fixes.

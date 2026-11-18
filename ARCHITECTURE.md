@@ -45,7 +45,7 @@
 | Tabelas de salto dos interpretadores de bytecode | `patches/ps3recomp-v0.18.0-ppu_lifter.patch` |
 | Executável | `port/` (motor live-draw, `PARAM.SFO`, NIDs extras, `fs_area.c`) |
 | Programas SPU | `spu/images.json` (só identificadores) |
-| Padrões de execução | `scripts/boot_seguro.ps1`: `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `GCM_SUBCH1_M2MF=1`, `PPU_PRIO_ABOVE=2040`, `PS3_VERBOSE=0` |
+| Padrões de execução | `scripts/boot_seguro.ps1`: `SPURS_JC_PARALLEL=1`, `PS3_USLEEP_WAIT_US=500`, `SPU_INTERP_UNLIFTED=1`, `GCM_PARK_GRACE_MS=2000`, `PS3_AUDIO_OUT_CH=2`, `GCM_SUBCH1_M2MF=1`, `PPU_PRIO_ABOVE=2040`, `PS3_VERBOSE=0`; ligados no próprio código: `JC_SPU_PRIO`, `JC_SPU_ORDER`, `JC_DONE_ORDER`, `JC_SPU_FAIR`, `GCM_TAIL_KEEP_CALL`, `LD_SUBMIT_EVERY=256` |
 | Build | llvm-mingw (clang), Ninja; PPU a `-O1 -fwrapv`; SPU a `-O2 -mavx2 -mfma -ffp-contract=off` |
 
 ## Fatos medidos do jogo

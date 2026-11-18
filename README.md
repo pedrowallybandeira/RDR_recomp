@@ -8,13 +8,13 @@ Recompilação estática **pessoal e experimental** de *Red Dead Redemption — 
 
 ## Estado
 
-> **Pesquisa, longe de ser jogável.** O jogo inicia, passa pelos menus e chega à **primeira cutscene 3D** (cerca de 2 minutos depois do boot), que roda a **4–6 FPS**. A tela título roda a 5–7 FPS.
+> **Experimental, mas já jogável na primeira cidade.** O jogo passa pela abertura (vídeos com som, tela título, cutscene do trem a 20–30 FPS) e chega a **Armadillo**, onde dá para andar, correr, escalar, pular de telhados, atirar, brigar e salvar; a **primeira missão** começa (entrar no saloon). Na rua o jogo roda a **4–10 FPS**.
 >
-> - **Áudio:** funcionando: música, ambiente e os vídeos da abertura (sete correções do runtime, a maioria genérica; ver [docs/STATUS.md](docs/STATUS.md)).
-> - **Desempenho:** limitado pela CPU. Um experimento com o PR sp00nznet/ps3recomp#632 (float do SPU nativo) levou a tela título a 29–44 FPS; ainda não está no build.
-> - **Imagem:** a cena é desenhada com defeitos (cintilação, elementos sumindo, trechos escuros). O backend Vulkan do toolkit já compila no Windows, mas no RDR ainda desenha bem pior que o Direct3D 12.
-> - **Entrada:** só XInput; a navegação até a cena é feita por roteiro de botões (`PAD_SCRIPT`).
-> - **Estabilidade:** o PC hospedeiro já congelou em boots longos; por isso o jogo só deve rodar por `scripts\boot_seguro.ps1`.
+> - **Áudio:** funcionando: música, efeitos e os vídeos da abertura.
+> - **Desempenho:** limitado pela CPU; a thread que traduz os comandos do RSX para o Direct3D 12 fica ~90% ocupada.
+> - **Imagem:** sem pisca de cor desde a v19. No build adotado a cena só tem luz ambiente; em experimento o sol, a névoa e os reflexos já voltaram, e a sombra projetada está em diagnóstico. Vegetação ao longe em blocos e chão borrado.
+> - **Entrada:** controle de Xbox (XInput).
+> - **Estabilidade:** às vezes a carga de uma cutscene para. O PC hospedeiro já congelou em sessões longas de boots seguidos; por isso o jogo só deve rodar por `scripts\boot_seguro.ps1`.
 >
 > Detalhes, números e próximos passos: [docs/STATUS.md](docs/STATUS.md).
 
@@ -77,13 +77,13 @@ A **personal, experimental** static recompilation of *Red Dead Redemption — Ga
 
 ### Status
 
-> **Research, far from playable.** The game boots, goes through the menus and reaches the **first 3D cutscene** (about 2 minutes after boot), which runs at **4–6 FPS**. The title screen runs at 5–7 FPS.
+> **Experimental, but already playable in the first town.** The game goes through the intro (videos with sound, title screen, the train cutscene at 20–30 FPS) and reaches **Armadillo**, where you can walk, run, climb, jump off roofs, shoot, fight and save; the **first mission** starts (go to the saloon). Town runs at **4–10 FPS**.
 >
-> - **Audio:** working: music, ambience and the intro videos (seven runtime fixes, most of them generic; see [docs/STATUS.md](docs/STATUS.md)).
-> - **Performance:** CPU-bound. An experiment with PR sp00nznet/ps3recomp#632 (native SPU float) took the title screen to 29–44 FPS; it is not in the build yet.
-> - **Picture:** the scene renders with defects (flicker, disappearing elements, dark areas). The toolkit's Vulkan backend now builds on Windows, but on RDR it still draws far worse than Direct3D 12.
-> - **Input:** XInput only; menus are driven by a scripted button sequence (`PAD_SCRIPT`).
-> - **Stability:** the host PC has frozen during long boots, so only run the game through `scripts\boot_seguro.ps1`.
+> - **Audio:** working: music, effects and the intro videos.
+> - **Performance:** CPU-bound; the thread that turns RSX commands into Direct3D 12 calls is ~90% busy.
+> - **Picture:** no color flicker since v19. In the adopted build the scene has ambient light only; in an experiment the sun, fog and reflections are back, and cast shadows are under investigation. Distant vegetation renders as blocks and the ground is blurry.
+> - **Input:** Xbox controller (XInput).
+> - **Stability:** loading a cutscene sometimes hangs. The host PC has frozen during long series of boots, so only run the game through `scripts\boot_seguro.ps1`.
 >
 > Details and next steps: [docs/STATUS.md](docs/STATUS.md) (Portuguese, with an English summary).
 

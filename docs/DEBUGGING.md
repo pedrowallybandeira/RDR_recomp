@@ -27,6 +27,8 @@ Um boot de 330 s com o `PAD_SCRIPT` do BUILDING deve ter: `[STARTUP] Time to Pre
 | `SPU_JOBPROF` | toolkit | contagem e tempo por job |
 | `SPURS_JC_PARALLEL=1` | patch | jobs da mesma cadeia em paralelo até `maxContention` (cena de 3,8 para 5,9 FPS) |
 | `SPURS_JOB_FULLCLEAR` | patch | limpa o LS inteiro entre jobs, em vez de só a parte usada |
+| `JC_SPU_PRIO`, `JC_SPU_ORDER`, `JC_DONE_ORDER`, `JC_SPU_FAIR` | patch | ligados por padrão; `=0` desliga cada correção do modo paralelo das cadeias (tabela de prioridade, reserva em ordem, aviso de fim em ordem, sem inanição da SPU 0) |
+| `JC_CLAIM_STATS=1` | patch | estatística `[jc-claim]` da reserva de SPU |
 | `PS3_USLEEP_WAIT_US=500` | patch | `usleep` longo dorme em vez de girar |
 | `GCM_PARK_GRACE_MS=2000` | toolkit | prazo antes de estacionar o caminhador do FIFO |
 | `PS3_AUDIO_OUT_CH=2` | patch | canais anunciados pela saída de áudio (2, 6 ou 8) |
@@ -36,6 +38,8 @@ Um boot de 330 s com o `PAD_SCRIPT` do BUILDING deve ter: `[STARTUP] Time to Pre
 | `PS3_SCTRACE=fail` | toolkit | registra syscalls que falham |
 | `PS3_FSLOG` | toolkit | registra o acesso a arquivos |
 | `GCM_SUBCH1_M2MF=1` | patch | executa as cópias NV0039 do subcanal 1 (sem elas, o áudio do stream não fica pronto) |
+| `GCM_TAIL_KEEP_CALL=0` | patch | volta ao salto antigo da "segment tail word" (pula também CALLs; traz de volta o pisca de cor de um quadro) |
+| `LD_SUBMIT_EVERY=<n>` | patch | envia a lista de comandos à GPU a cada `n` desenhos sem esperar (padrão 256) |
 | `PPU_PRIO_ABOVE=<n>` | patch | threads do guest com prioridade menor que `n` em `ABOVE_NORMAL` (2040 põe o Multistream) |
 | `USLEEP_CAP=0` | patch | desliga o limite da espera do `usleep` (o timer de alta resolução às vezes não dispara) |
 | `PS3_ECOQOS=1` | port (`main.cpp`) | mantém o processo no EcoQoS do Windows 11 (o padrão é sair dele) |
@@ -47,7 +51,7 @@ Um boot de 330 s com o `PAD_SCRIPT` do BUILDING deve ter: `[STARTUP] Time to Pre
 
 - **`dispatch MISS fp=… size=…` no `.err`:** um job SPU sem tradução. Rode de novo com `SPU_DUMP_MISS`, traduza com `lift_jobs.py`, reconfigure e compile. Um job novo pode aparecer só depois de minutos; boots curtos não o mostram. `analysis\tools\fpbusca.c` acha o job no ELF pelo fingerprint, quando ele está lá.
 - **Quadros param, jogo não cai:** colete pilhas com `boot_seguro.ps1 -Sonda <seg>` e leia com `analysis\tools\pilhas.ps1 -Tag <tag>`. Thread de render girando em espera de rótulo do RSX costuma ser job SPU que não terminou ou comando do FIFO descartado numa ressincronização (procure `gcm_fifo_resync`).
-- **`FIFO JUMP to unmapped IO`:** a palavra inválida no fim dos segmentos de 8 KB do FIFO; o patch do `cellGcmSys.c` pula essa palavra.
+- **`FIFO JUMP to unmapped IO`:** a palavra inválida no fim dos segmentos de 8 KB do FIFO; o patch do `cellGcmSys.c` pula essa palavra, mas não uma CALL ou um RET (`[tail-keep]` conta as CALLs executadas). O log é amostrado: as 8 primeiras linhas e depois uma a cada 1.024.
 - **Laço infinito em `func_0066BEA8` durante o `Loading...`:** lista de vozes com cabeça `0xCDCD` (o preenchimento do alocador do RAGE). Gere o `ppu_recomp_023.cpp` com `scripts\gera_voz.py`; a sonda `[t54]` registra o estado e sai do laço.
 - **CPU baixa e disco parado na carga:** compare as linhas `IO <seg> <bytes>` do `.mon` (só se sobem ou param; o valor absoluto varia).
 - **Modo lento para reproduzir problemas de tempo:** `-NucleosLivres 7` deixa o jogo com 5 núcleos.
