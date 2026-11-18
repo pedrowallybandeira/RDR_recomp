@@ -4,7 +4,7 @@
 
 Recompilação estática **pessoal e experimental** de *Red Dead Redemption — Game of the Year Edition* (PS3, EUA; diretório de dados `BLUS30418`) para Windows x64, construída sobre o toolkit [ps3recomp](https://github.com/sp00nznet/ps3recomp).
 
-> **Este repositório não contém o jogo.** Não há aqui executável, ELF, código traduzido do jogo, programas SPU, firmware, chaves, dados do disco, quadros crus nem logs (só as quatro capturas abaixo, da saída do port). Para compilar é preciso ter a sua própria cópia do jogo e produzir localmente os arquivos de entrada. Ver [docs/LEGAL.md](docs/LEGAL.md).
+> **Este repositório não contém o jogo.** Não há aqui executável, ELF, código traduzido do jogo, programas SPU, firmware, chaves, dados do disco, quadros crus nem logs (só as capturas abaixo, da saída do port). Para compilar é preciso ter a sua própria cópia do jogo e produzir localmente os arquivos de entrada. Ver [docs/LEGAL.md](docs/LEGAL.md).
 
 ## Estado
 
@@ -34,14 +34,23 @@ Recompilação estática **pessoal e experimental** de *Red Dead Redemption — 
 
 ## Capturas
 
-Saída do próprio port (`LD_FRAME_DUMP`, 1280×720), boot `seg182` de 2026-11-08 (cópias NV0039 ligadas, hoje no build), sem retoque.
+Saída do próprio port (`LD_FRAME_DUMP`, 1280×720), sem retoque. As seis primeiras são do boot `seg346`, de 2026-11-17, num build **experimental**: a v19 mais a correção da luz das tentativas 134–135, que ainda não está no build adotado. A sombra projetada ainda falta, e os arbustos ao longe saem em blocos.
 
 | | |
 | :---: | :---: |
-| ![Tela título](docs/screenshots/title-screen.jpg) | ![Tela de carga](docs/screenshots/loading.jpg) |
-| Tela título (~8 FPS) | Carga da primeira missão |
+| ![Plataforma da estação](docs/screenshots/station-platform.jpg) | ![Rua de Armadillo](docs/screenshots/armadillo-street.jpg) |
+| Plataforma da estação de Armadillo | A rua principal de Armadillo |
+| ![Pôr do sol na estação](docs/screenshots/sunset-station.jpg) | ![O trem ao pôr do sol](docs/screenshots/sunset-train.jpg) |
+| Pôr do sol na estação | O trem ao pôr do sol |
+| ![Menu de pausa](docs/screenshots/pause-map.jpg) | ![Tela título](docs/screenshots/title-screen.jpg) |
+| Menu de pausa | Tela título (boot `seg182`, 2026-11-08) |
+
+Antes: a primeira cutscene em 2026-11-08 (boot `seg182`), escura e com defeitos.
+
+| | |
+| :---: | :---: |
 | ![Abertura: barco ao longe](docs/screenshots/cutscene-boat.jpg) | ![Abertura: o cais](docs/screenshots/cutscene-dock.jpg) |
-| Primeira cutscene: barco ao longe (~6 FPS) | O plano seguinte, no cais: escuro e com defeitos |
+| Barco ao longe (~6 FPS) | O plano seguinte, no cais |
 
 ## Início rápido
 
@@ -73,7 +82,7 @@ O código e a documentação próprios deste repositório estão sob a licença 
 
 A **personal, experimental** static recompilation of *Red Dead Redemption — Game of the Year Edition* (PS3, US; data directory `BLUS30418`) to Windows x64, built on the [ps3recomp](https://github.com/sp00nznet/ps3recomp) toolkit.
 
-> **This repository does not contain the game.** No executable, ELF, lifted game code, SPU programs, firmware, keys, disc data, raw frames or logs (only the four screenshots of the port's output shown here). You need your own copy of the game and must produce the inputs locally. See [docs/LEGAL.md](docs/LEGAL.md).
+> **This repository does not contain the game.** No executable, ELF, lifted game code, SPU programs, firmware, keys, disc data, raw frames or logs (only the screenshots of the port's output shown here). You need your own copy of the game and must produce the inputs locally. See [docs/LEGAL.md](docs/LEGAL.md).
 
 ### Status
 
@@ -103,7 +112,7 @@ A **personal, experimental** static recompilation of *Red Dead Redemption — Ga
 
 ### Screenshots
 
-The port's own output (`LD_FRAME_DUMP`, 1280×720), boot `seg182` from 2026-11-08 (NV0039 copies on, now in the build), untouched: title screen (~8 FPS), first-mission loading screen, and the first cutscene — the boat in the distance (~6 FPS), then the next shot on the dock, dark and with rendering defects. Images are in the table above.
+The port's own output (`LD_FRAME_DUMP`, 1280×720), untouched. The first six come from boot `seg346` on 2026-11-17, an **experimental** build: v19 plus the lighting fix from attempts 134–135, which is not in the adopted build yet. Cast shadows are still missing and distant bushes render as blocks. They show the Armadillo station platform, the main street, the station and the train at sunset, the pause menu, and the title screen (boot `seg182`, 2026-11-08). The last row is the first cutscene as it looked on 2026-11-08: dark and with rendering defects. Images are in the tables above.
 
 ### Quick start
 
